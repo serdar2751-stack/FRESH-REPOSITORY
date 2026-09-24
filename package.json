@@ -1,0 +1,47 @@
+{
+  "name": "usta",
+  "version": "0.1.0",
+  "description": "API-driven AI coding agent harness for the terminal: multi-provider, permission-aware, undoable, scriptable.",
+  "type": "module",
+  "bin": {
+    "usta": "bin/usta.js"
+  },
+  "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20.3"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "node src/cli.ts",
+    "test": "node --test --test-reporter=spec \"test/**/*.test.ts\"",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "coding-agent",
+    "cli",
+    "anthropic",
+    "claude",
+    "openai",
+    "llm",
+    "harness"
+  ],
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0",
+    "openai": "^7.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "typescript": "^5.9.3"
+  }
+}

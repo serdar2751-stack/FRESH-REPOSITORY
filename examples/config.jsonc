@@ -1,0 +1,97 @@
+// ~/.config/usta/config.json (global) or <project>/.usta/config.json (project).
+// Comments and trailing commas are allowed.
+{
+  // Default model: "provider/model".
+  "model": "anthropic/claude-opus-5",
+  // Optional cheap model used only to title sessions.
+  // "smallModel": "anthropic/claude-haiku-4-5",
+
+  // Reasoning effort for models that support it: low | medium | high | xhigh | max.
+  // Omit to use each model's recommended default.
+  // "effort": "high",
+
+  "providers": {
+    "anthropic": {
+      // "apiKey": "env:ANTHROPIC_API_KEY",   // default: ANTHROPIC_API_KEY
+      "options": {
+        // Server-side refusal fallbacks on models that support them (default: true on api.anthropic.com).
+        "fallbacks": true,
+        // Anthropic's server-side web search tool (billed per search).
+        "webSearch": false
+      }
+    },
+    "openrouter": {},
+    // Any OpenAI-compatible endpoint: vLLM, llama.cpp, LiteLLM, a company gateway...
+    "local": {
+      "format": "openai",
+      "baseURL": "http://localhost:8000/v1",
+      "apiKey": "not-needed",
+      "models": {
+        "qwen3-coder": { "contextWindow": 131072, "maxOutput": 16384 }
+      }
+    },
+    // Ollama: set a large context (e.g. OLLAMA_CONTEXT_LENGTH=65536) - the default is too small for agents.
+    "ollama": {
+      "models": { "qwen3-coder:30b": { "contextWindow": 65536, "maxOutput": 8192 } }
+    }
+  },
+
+  // Permission rules: "allow" | "ask" | "deny", per tool or per pattern.
+  // Later (more specific) entries win. Built-in defaults: reads allowed, edits ask,
+  // read-only shell commands (ls, git status, rg, ...) allowed, other commands ask.
+  "permission": {
+    "edit": "ask",
+    "bash": {
+      "npm test*": "allow",
+      "npm run lint*": "allow",
+      "git push*": "ask",
+      "rm -rf *": "deny"
+    },
+    "webfetch": { "https://docs.python.org/*": "allow" },
+    "mcp__github__*": "ask"
+  },
+
+  // MCP servers (stdio or streamable HTTP).
+  "mcp": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "env:GITHUB_TOKEN" }
+    },
+    "docs": { "type": "http", "url": "https://example.com/mcp", "headers": { "Authorization": "env:DOCS_TOKEN" } }
+  },
+
+  // Hooks receive the event as JSON on stdin. Exit 2 blocks (PreToolUse) or
+  // sends feedback to the model (PostToolUse, Stop).
+  "hooks": {
+    "PostToolUse": [
+      { "matcher": "edit|write|apply_patch", "command": "npx prettier --write \"$USTA_FILE\" >/dev/null 2>&1 || true" }
+    ],
+    "Stop": [
+      { "command": "npm test --silent >/tmp/usta-test.log 2>&1 || { tail -30 /tmp/usta-test.log >&2; exit 2; }" }
+    ]
+  },
+
+  // Extra instruction files for the system prompt (AGENTS.md and CLAUDE.md are read automatically).
+  "instructions": ["docs/CONVENTIONS.md"],
+
+  // Summarize the conversation at 80% of the context window (or at maxContextTokens).
+  "compaction": { "auto": true, "threshold": 0.8, "maxContextTokens": 400000 },
+
+  // Custom agents can also be Markdown files in .usta/agents/.
+  "agents": {
+    "docs": {
+      "description": "Writes and updates documentation",
+      "mode": "primary",
+      "prompt": "Focus on documentation. Keep it short and accurate.",
+      "permission": { "bash": "deny" }
+    }
+  },
+
+  // Disable tools globally.
+  "tools": { "webfetch": true },
+
+  "maxSteps": 500,
+  "snapshots": true,
+  "notify": true
+}

@@ -3,12 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import type { Config, ProviderConfig } from "../config/config.ts";
 import { resolveSecret } from "../config/config.ts";
-import { authStore } from "../config/store.ts";
+import { authStore, stateStore } from "../config/store.ts";
 import { AnthropicProvider, type AnthropicOptions } from "./anthropic.ts";
 import { catalogLookup, catalogLookupAny, guessModel } from "./catalog.ts";
 import { OpenAICompatibleProvider, type OpenAIOptions } from "./openai.ts";
 import { OpenAIResponsesProvider } from "./openai-responses.ts";
-import type { ApiFormat, ModelInfo, Provider } from "./types.ts";
+import { type ApiFormat, type ModelInfo, type Provider, ProviderError } from "./types.ts";
 
 export interface Preset {
   name: string;
@@ -147,9 +147,28 @@ export class ProviderRegistry {
     return false;
   }
 
+  /** Where a key that wins over a saved one comes from ("config" or an env var name). */
+  keyOverride(id: string): string | undefined {
+    if (resolveSecret(this.providerConfig(id).apiKey)) return "config";
+    for (const env of PRESETS[id]?.env ?? []) {
+      if (id === "anthropic" && env === "ANTHROPIC_AUTH_TOKEN") continue;
+      if (process.env[env]) return env;
+    }
+    return undefined;
+  }
+
   get(id: string): Provider {
     let p = this.instances.get(id);
-    if (p) return p;
+    if (!p) {
+      p = this.create(id);
+      this.instances.set(id, p);
+    }
+    return p;
+  }
+
+  /** Build a fresh, uncached provider instance, optionally with a specific key. */
+  create(id: string, over: { apiKey?: string } = {}): Provider {
+    let p: Provider;
     const preset = PRESETS[id];
     const cfg = this.providerConfig(id);
     if (!preset && !cfg.format) {
@@ -159,7 +178,7 @@ export class ProviderRegistry {
     const options = { ...(preset?.options ?? {}), ...(cfg.options ?? {}) };
     const headers = { ...(preset?.headers ?? {}), ...(cfg.headers ?? {}) };
     const baseURL = cfg.baseURL ?? preset?.baseURL;
-    const key = this.apiKey(id);
+    const key = over.apiKey ?? this.apiKey(id);
     if (format === "anthropic") {
       p = new AnthropicProvider({
         ...(options as Partial<AnthropicOptions>),
@@ -179,7 +198,6 @@ export class ProviderRegistry {
       };
       p = o.api === "responses" ? new OpenAIResponsesProvider(o) : new OpenAICompatibleProvider(o);
     }
-    this.instances.set(id, p);
     return p;
   }
 
@@ -194,9 +212,20 @@ export class ProviderRegistry {
     this.instances.set(provider.id, provider);
   }
 
-  /** The configured model, or the best default for the first provider with credentials. */
+  /**
+   * The configured model, else the model picked last in the terminal UI,
+   * else the best default for the first provider with credentials.
+   */
   defaultModelRef(): string | undefined {
     if (this.config.model) return this.config.model;
+    const last = stateStore.get().lastModel;
+    if (last) {
+      try {
+        if (this.hasCredentials(parseModelRef(last).provider)) return last;
+      } catch {
+        // stale entry
+      }
+    }
     for (const id of ["anthropic", "openai", "gemini", "openrouter", "deepseek"]) {
       const preset = PRESETS[id];
       if (preset?.defaultModel && this.apiKey(id)) return `${id}/${preset.defaultModel}`;
@@ -242,6 +271,32 @@ export class ProviderRegistry {
     const override = this.providerConfig(provider).models?.[model];
     if (override) info = { ...info, ...stripUndefined(override), id: model, provider, source: info.source === "default" ? "config" : info.source };
     return info;
+  }
+}
+
+/**
+ * Check a key with a cheap authenticated call (listing models). "rejected"
+ * only when the provider says the credentials are invalid; network trouble
+ * or a provider without a model list gives "unknown".
+ */
+export async function checkCredentials(
+  registry: ProviderRegistry,
+  id: string,
+  apiKey?: string,
+  timeoutMs = 10_000,
+): Promise<{ status: "ok" | "rejected" | "unknown"; message?: string }> {
+  const provider = registry.create(id, apiKey ? { apiKey } : {});
+  if (!provider.listModels) return { status: "unknown" };
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    await provider.listModels(ctrl.signal);
+    return { status: "ok" };
+  } catch (err) {
+    const message = (err as Error).message;
+    return err instanceof ProviderError && err.kind === "auth" ? { status: "rejected", message } : { status: "unknown", message };
+  } finally {
+    clearTimeout(timer);
   }
 }
 

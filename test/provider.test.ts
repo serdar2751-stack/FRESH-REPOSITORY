@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { after, before, describe, it } from "node:test";
+import { stateStore } from "../src/config/store.ts";
 import type { Message } from "../src/core/types.ts";
 import { AnthropicProvider, sanitizeFallbackContent } from "../src/provider/anthropic.ts";
 import { catalogLookup } from "../src/provider/catalog.ts";
@@ -458,5 +462,23 @@ describe("registry", () => {
     assert.equal(local.contextWindow, 65_536);
     assert.equal(local.source, "config");
     assert.ok(reg.hasCredentials("local"));
+  });
+
+  it("defaults to the configured model, then the last picked usable model", async () => {
+    const prev = process.env.USTA_DATA_DIR;
+    process.env.USTA_DATA_DIR = await fs.mkdtemp(path.join(os.tmpdir(), "usta-state-"));
+    try {
+      const providers = { anthropic: { apiKey: "k" }, openai: { disabled: true } };
+      const reg = new ProviderRegistry({ providers });
+      assert.equal(reg.defaultModelRef(), "anthropic/claude-opus-5");
+      await stateStore.setLastModel("anthropic/claude-sonnet-5");
+      assert.equal(reg.defaultModelRef(), "anthropic/claude-sonnet-5");
+      await stateStore.setLastModel("openai/gpt-5");
+      assert.equal(reg.defaultModelRef(), "anthropic/claude-opus-5");
+      assert.equal(new ProviderRegistry({ providers, model: "anthropic/claude-haiku-4-5" }).defaultModelRef(), "anthropic/claude-haiku-4-5");
+    } finally {
+      if (prev === undefined) delete process.env.USTA_DATA_DIR;
+      else process.env.USTA_DATA_DIR = prev;
+    }
   });
 });

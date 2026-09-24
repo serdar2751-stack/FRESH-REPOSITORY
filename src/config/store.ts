@@ -57,3 +57,16 @@ export const trustStore = {
     await atomicWrite(this.file(), JSON.stringify(list, null, 2));
   },
 };
+
+/** Small UI state that outlives a session (the model picked last). */
+export const stateStore = {
+  file(): string {
+    return path.join(paths.data, "state.json");
+  },
+  get(): { lastModel?: string } {
+    return readJsonSync(this.file(), {} as { lastModel?: string });
+  },
+  async setLastModel(ref: string): Promise<void> {
+    await atomicWrite(this.file(), JSON.stringify({ ...this.get(), lastModel: ref }, null, 2));
+  },
+};

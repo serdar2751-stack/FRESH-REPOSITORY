@@ -73,6 +73,12 @@ export class MockLLM {
     for await (const c of req) chunks.push(c as Buffer);
     const raw = Buffer.concat(chunks).toString("utf8");
     const url = req.url ?? "";
+    const key = req.headers["x-api-key"] ?? String(req.headers.authorization ?? "").replace(/^Bearer /, "");
+    if (key === "bad-key") {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } }));
+      return;
+    }
     if (req.method === "GET" && url.startsWith("/v1/models")) {
       const id = decodeURIComponent(url.split("?")[0]!.slice("/v1/models/".length));
       res.writeHead(200, { "content-type": "application/json" });

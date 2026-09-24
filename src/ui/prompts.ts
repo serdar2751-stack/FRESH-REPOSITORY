@@ -20,7 +20,17 @@ function bottom(inner: number, help: string, accent: (s: string) => string): str
 
 export interface Modal {
   handleKey(k: Key): void;
-  render(width: number): { lines: string[]; cursor?: { row: number; col: number } };
+  /** `height` is the number of rows available; content beyond it is clipped from the top. */
+  render(width: number, height?: number): { lines: string[]; cursor?: { row: number; col: number } };
+}
+
+/** Body lines plus a blank separator, clipped with a marker to fit `room` rows. */
+function fitBody(lines: string[], room: number): string[] {
+  if (!lines.length) return [];
+  if (lines.length + 1 <= room) return [...lines, ""];
+  if (room < 3) return [];
+  const keep = room - 2;
+  return [...lines.slice(0, keep), c.gray(`… ${lines.length - keep} more lines`), ""];
 }
 
 /** Arrow-key list selection inside a bordered box, with optional free-text answers. */
@@ -140,27 +150,33 @@ export class SelectPrompt implements Modal {
     this.onChange?.();
   }
 
-  render(width: number): { lines: string[]; cursor?: { row: number; col: number } } {
+  render(width: number, height = Number.POSITIVE_INFINITY): { lines: string[]; cursor?: { row: number; col: number } } {
     const inner = Math.max(20, width - 4);
     const bar = this.accent("│ ");
     const titleText = ` ${this.title} `;
     const lines: string[] = [this.accent("╭─" + truncateAnsi(titleText, inner) + "─".repeat(Math.max(0, inner - stringWidth(titleText))))];
-    for (const b of this.body) for (const l of wrapAnsi(b, inner)) lines.push(bar + l);
-    if (this.body.length) lines.push(bar);
+    const body = this.body.flatMap((b) => wrapAnsi(b, inner));
     if (this.input) {
+      const r = this.input.editor.render(inner);
+      for (const l of fitBody(body, height - 4 - r.lines.length)) lines.push(bar + l);
       lines.push(bar + c.bold(this.input.option.label));
       lines.push(bar + c.gray(this.input.option.input!.prompt));
-      const r = this.input.editor.render(inner);
       const row0 = lines.length;
       for (const l of r.lines) lines.push(bar + l);
       lines.push(bottom(inner, "enter submit · esc back", this.accent));
       return { lines, cursor: { row: row0 + r.cursor.row, col: r.cursor.col + 2 } };
     }
-    if (this.filterable) lines.push(bar + c.gray("filter: ") + (this.filter || c.gray("type to filter")));
     const vis = this.visible();
+    // The options always stay visible: the body is clipped first, the option window last.
+    const fixed = 2 + (this.filterable ? 1 : 0);
+    const optionRows = (n: number) => Math.max(1, Math.min(vis.length, n)) + (vis.length > n ? 1 : 0);
+    let maxVisible = this.maxVisible;
+    if (fixed + optionRows(maxVisible) > height) maxVisible = Math.max(1, height - fixed - 1);
+    for (const l of fitBody(body, height - fixed - optionRows(maxVisible))) lines.push(bar + l);
+    if (this.filterable) lines.push(bar + c.gray("filter: ") + (this.filter || c.gray("type to filter")));
     const pos = Math.max(0, vis.findIndex((v) => v.i === this.selected));
-    const start = Math.max(0, Math.min(pos - Math.floor(this.maxVisible / 2), vis.length - this.maxVisible));
-    const shown = vis.slice(start, start + this.maxVisible);
+    const start = Math.max(0, Math.min(pos - Math.floor(maxVisible / 2), vis.length - maxVisible));
+    const shown = vis.slice(start, start + maxVisible);
     shown.forEach(({ o, i }) => {
       const sel = i === this.selected;
       const num = this.filterable ? "" : `${i + 1}. `;
@@ -175,15 +191,20 @@ export class SelectPrompt implements Modal {
   }
 }
 
-/** Single-line text entry in a box (e.g. naming a session). */
+/** Single-line text entry in a box (e.g. naming a session, entering an API key). */
 export class TextPrompt implements Modal {
   private readonly editor = new Editor();
   private readonly title: string;
+  private readonly body: string[];
+  /** Show bullets instead of the text (secrets). */
+  private readonly mask: boolean;
   onChange?: () => void;
 
-  constructor(opts: { title: string; initial?: string; onDone: (text: string | undefined) => void }) {
+  constructor(opts: { title: string; initial?: string; body?: string[]; mask?: boolean; placeholder?: string; onDone: (text: string | undefined) => void }) {
     this.title = opts.title;
-    this.editor.placeholder = "";
+    this.body = opts.body ?? [];
+    this.mask = opts.mask ?? false;
+    this.editor.placeholder = opts.placeholder ?? "";
     if (opts.initial) this.editor.setValue(opts.initial);
     this.editor.onChange = () => this.onChange?.();
     this.editor.onSubmit = (t) => opts.onDone(t);
@@ -201,12 +222,25 @@ export class TextPrompt implements Modal {
     this.editor.handleKey(k);
   }
 
-  render(width: number): { lines: string[]; cursor?: { row: number; col: number } } {
+  render(width: number, height = Number.POSITIVE_INFINITY): { lines: string[]; cursor?: { row: number; col: number } } {
     const inner = Math.max(20, width - 4);
+    const bar = theme.accent("│ ");
     const lines = [theme.accent("╭─ " + this.title + " " + "─".repeat(Math.max(0, inner - stringWidth(this.title) - 2)))];
-    const r = this.editor.render(inner);
+    const r0 = this.mask ? undefined : this.editor.render(inner);
+    const body = this.body.flatMap((b) => wrapAnsi(b, inner));
+    for (const l of fitBody(body, height - 2 - (r0?.lines.length ?? 1))) lines.push(bar + l);
+    if (this.mask) {
+      const value = this.editor.expanded().replace(/\s+/g, "");
+      const room = Math.max(4, inner - stringWidth(this.editor.prompt) - 1);
+      const dots = value.length > room ? "…" + "•".repeat(room - 1) : "•".repeat(value.length);
+      lines.push(bar + theme.accent(this.editor.prompt) + (dots || c.gray(this.editor.placeholder)));
+      const row = lines.length - 1;
+      lines.push(bottom(inner, `${value.length ? `${value.length} chars · ` : ""}enter save · esc cancel`, theme.accent));
+      return { lines, cursor: { row, col: 2 + stringWidth(this.editor.prompt) + stringWidth(dots) } };
+    }
+    const r = r0!;
     const row0 = lines.length;
-    for (const l of r.lines) lines.push(theme.accent("│ ") + l);
+    for (const l of r.lines) lines.push(bar + l);
     lines.push(bottom(inner, "enter save · esc cancel", theme.accent));
     return { lines, cursor: { row: row0 + r.cursor.row, col: r.cursor.col + 2 } };
   }

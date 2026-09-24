@@ -55,9 +55,9 @@ usta -c                                 # son oturuma devam et
 usta run "README'deki kurulum adımlarını doğrula" --allow edit
 ```
 
-Anahtarı ortam değişkeni yerine kaydetmek için: `usta auth login anthropic` (anahtar yalnızca size okunabilir bir dosyaya yazılır).
+Hiç anahtar yoksa `usta` ilk açılışta bir kurulum ekranı gösterir: sağlayıcıyı seçin, anahtarı yapıştırın (ekranda maskelenir). Anahtar kısa bir doğrulama çağrısıyla sınanır, reddedilirse kaydedilmez; kabul edilirse yalnızca size okunabilir bir dosyaya (`0600`) yazılır ve sağlayıcının önerilen modeli seçilir. Aynı akış sonradan `/login [sağlayıcı]` ile, terminal dışında `usta auth login anthropic` ile açılır.
 
-Model belirtilmezse ilk bulunan anahtara göre seçilir: Anthropic → `claude-opus-5`, OpenAI → `gpt-5`, Gemini → `gemini-2.5-pro`.
+Model seçim sırası: `-m` bayrağı → `USTA_MODEL` → config'deki `model` → arayüzde en son seçtiğiniz model (anahtarı hâlâ varsa) → ilk bulunan anahtara göre varsayılan: Anthropic → `claude-opus-5`, OpenAI → `gpt-5`, Gemini → `gemini-2.5-pro`.
 
 ## Sağlayıcılar ve modeller
 
@@ -112,7 +112,7 @@ OpenAI sağlayıcısı varsayılan olarak **Responses API**'yi kullanır: istekl
 | `@yol` | Dosya/görsel/dizin ekle (`@src/app.ts:10-40` satır aralığı) |
 | `!komut` | Kabuk komutu çalıştır, çıktısını modele bağlam olarak ver |
 
-Komutlar: `/help`, `/new`, `/sessions`, `/model`, `/agent`, `/mode`, `/plan`, `/effort`, `/compact`, `/undo`, `/redo`, `/diff [all]`, `/cost`, `/status`, `/init` (AGENTS.md oluşturur), `/export`, `/copy`, `/todos`, `/mcp`, `/permissions`, `/title`, `/login`, `/verbose`, `/exit`. `/` yazınca tamamlama menüsü açılır.
+Komutlar: `/help`, `/new`, `/sessions`, `/model`, `/agent`, `/mode`, `/plan`, `/effort`, `/compact`, `/undo`, `/redo`, `/diff [all]`, `/cost`, `/status`, `/init` (AGENTS.md oluşturur), `/export`, `/copy`, `/todos`, `/mcp`, `/permissions`, `/title`, `/login [sağlayıcı]`, `/verbose`, `/exit`. `/` yazınca tamamlama menüsü açılır. `/model` listesinde olmayan bir modeli "Other model…" ile `sağlayıcı/model` yazarak seçebilirsiniz.
 
 İzin istemi şu seçenekleri sunar: bir kez izin ver · bu oturum için izin ver (ör. `git push *`) · bu projede hep izin ver · reddet ve ajana ne yapması gerektiğini söyle. Geri bildirimsiz ret turu durdurur; geri bildirimli ret ajana iletilir ve devam eder.
 

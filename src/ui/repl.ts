@@ -6,12 +6,12 @@ import { isPrimary } from "../agent/agents.ts";
 import { expandMentions } from "../agent/mentions.ts";
 import { type CommandInfo, expandCommand } from "../commands/commands.ts";
 import { paths } from "../config/paths.ts";
-import { authStore, trustStore } from "../config/store.ts";
+import { authStore, stateStore, trustStore } from "../config/store.ts";
 import type { AgentEvent } from "../core/events.ts";
 import { EFFORT_LEVELS, type Effort, textOf } from "../core/types.ts";
 import type { Mode, PermissionRequest } from "../permission/permission.ts";
 import { catalogModels } from "../provider/catalog.ts";
-import { PRESETS, parseModelRef } from "../provider/registry.ts";
+import { PRESETS, checkCredentials, parseModelRef } from "../provider/registry.ts";
 import { Runtime } from "../runtime.ts";
 import { exportMarkdown } from "../session/export.ts";
 import type { Session } from "../session/session.ts";
@@ -26,7 +26,7 @@ import { c, term, theme } from "./ansi.ts";
 import { type CompletionItem, Editor } from "./editor.ts";
 import { type Key, KeyParser } from "./keys.ts";
 import { renderMarkdown } from "./markdown.ts";
-import { type Modal, SelectPrompt, TextPrompt } from "./prompts.ts";
+import { type Modal, type SelectOption, SelectPrompt, TextPrompt } from "./prompts.ts";
 import { Screen } from "./screen.ts";
 import { ConversationView, renderChanges, renderDiff, renderTodos } from "./view.ts";
 
@@ -51,6 +51,18 @@ interface SlashCommand {
 }
 
 const MODES: Mode[] = ["normal", "auto-edit", "plan"];
+
+/** Where to create an API key, shown when connecting a provider. */
+const KEY_URLS: Record<string, string> = {
+  anthropic: "https://console.anthropic.com/settings/keys",
+  openai: "https://platform.openai.com/api-keys",
+  gemini: "https://aistudio.google.com/apikey",
+  openrouter: "https://openrouter.ai/keys",
+  deepseek: "https://platform.deepseek.com/api_keys",
+  groq: "https://console.groq.com/keys",
+  mistral: "https://console.mistral.ai/api-keys",
+  xai: "https://console.x.ai",
+};
 
 function modeBadge(mode: Mode, yolo: boolean): string {
   if (yolo && mode !== "plan") return c.red("⚠ yolo");
@@ -331,7 +343,7 @@ export async function runRepl(opts: ReplOptions): Promise<number> {
 
   // ----- banner -----
   const banner = () => {
-    const ref = currentModel() ?? c.red("no model — set an API key or run /model");
+    const ref = currentModel() ?? c.red("no model — /login to connect a provider");
     print(`${theme.brand("✻ usta")} ${c.gray(VERSION)}  ${c.bold(String(ref))} ${c.gray("· " + currentAgent())}`);
     const git = rt.root !== rt.cwd ? ` (project ${displayPath(rt.root, os.homedir())})` : "";
     print(c.gray(`  ${displayPath(rt.cwd, os.homedir())}${git}`));
@@ -377,7 +389,8 @@ export async function runRepl(opts: ReplOptions): Promise<number> {
     const lines: string[] = [...view.liveLines(w)];
     if (modal) {
       if (lines.length) lines.push("");
-      const r = modal.render(w);
+      // Give the modal the rows below the live view (the view is clipped first when space runs out).
+      const r = modal.render(w, Math.max(Math.min(12, screen.height - 1), screen.height - 1 - lines.length));
       const row0 = lines.length;
       lines.push(...r.lines);
       return { lines, cursor: r.cursor ? { row: row0 + r.cursor.row, col: r.cursor.col } : undefined };
@@ -566,7 +579,7 @@ export async function runRepl(opts: ReplOptions): Promise<number> {
 
   // ----- slash commands -----
   const pickModel = async () => {
-    const options: Array<{ label: string; hint?: string; value: string }> = [];
+    const options: SelectOption[] = [];
     for (const id of rt.registry.providerIds()) {
       if (!rt.registry.hasCredentials(id)) continue;
       const family = PRESETS[id]?.catalog;
@@ -578,9 +591,13 @@ export async function runRepl(opts: ReplOptions): Promise<number> {
     const cur = currentModel();
     if (cur && !options.some((o) => o.value === cur)) options.unshift({ label: cur, hint: "current", value: cur });
     if (!options.length) {
-      print(c.yellow("No provider credentials found. Set an API key (e.g. ANTHROPIC_API_KEY) or run `usta auth login <provider>`."));
+      connectProvider();
       return;
     }
+    options.push(
+      { label: "Other model…", hint: "any provider/model id", value: "\0other", input: { prompt: "Model reference, e.g. openrouter/<vendor>/<model> or ollama/<model>" } },
+      { label: "Connect another provider…", hint: "save an API key", value: "\0connect" },
+    );
     openModal(
       () =>
         new SelectPrompt({
@@ -588,9 +605,123 @@ export async function runRepl(opts: ReplOptions): Promise<number> {
           options,
           initial: Math.max(0, options.findIndex((o) => o.value === cur)),
           filterable: true,
+          onDone: (v, text) => {
+            closeModal();
+            if (v === "\0connect") connectProvider();
+            else if (v === "\0other") {
+              if (text) void setModel(text);
+            } else if (v) void setModel(v);
+          },
+        }),
+    );
+  };
+
+  /** Choose a provider, then enter its API key. */
+  const connectProvider = (provider?: string) => {
+    if (provider) return askKey(provider);
+    const ids = Object.keys(PRESETS).filter((id) => !PRESETS[id]!.keyless);
+    openModal(
+      () =>
+        new SelectPrompt({
+          title: "Connect a model provider",
+          body: [
+            "usta calls model APIs directly with your own key. Pick a provider to enter its key.",
+            c.gray("Local models (Ollama, LM Studio) need no key: add them under \"providers\" in the config."),
+          ],
+          options: [
+            ...ids.map((id) => ({
+              label: PRESETS[id]!.name,
+              hint: `${rt.registry.hasCredentials(id) ? "connected · " : ""}${PRESETS[id]!.env[0] ?? ""}`,
+              value: id,
+            })),
+            { label: "Skip for now", hint: "/login later", value: "" },
+          ],
+          cancelValue: "",
           onDone: (v) => {
             closeModal();
-            if (v) void setModel(v);
+            if (v) askKey(v);
+            else if (!currentModel()) print(c.gray("  No model yet. Use /login to connect a provider, or set an API key environment variable."));
+          },
+        }),
+    );
+  };
+
+  const askKey = (id: string) => {
+    const preset = PRESETS[id];
+    if (!preset && !rt.registry.providerConfig(id).format) {
+      print(c.red(`✗ Unknown provider "${id}". Known: ${Object.keys(PRESETS).join(", ")}`));
+      return;
+    }
+    const name = rt.registry.name(id);
+    const env = preset?.env[0];
+    openModal(
+      () =>
+        new TextPrompt({
+          title: `API key · ${name}`,
+          body: [
+            ...(KEY_URLS[id] ? [`Create one at ${theme.link(KEY_URLS[id]!)}`] : []),
+            c.gray(`Stored in ${displayPath(authStore.file(), os.homedir())}, readable only by you.${env ? ` Setting ${env} works too.` : ""}`),
+          ],
+          mask: true,
+          placeholder: "paste the key",
+          onDone: (key) => {
+            closeModal();
+            const k = key?.replace(/\s+/g, "");
+            if (k) {
+              saveKey(id, k).catch((err: unknown) => {
+                print(c.red(`✗ Could not save the key: ${(err as Error).message}`));
+                redraw();
+              });
+            }
+          },
+        }),
+    );
+  };
+
+  const saveKey = async (id: string, key: string) => {
+    const name = rt.registry.name(id);
+    // A quick authenticated call catches typos before the first prompt.
+    flashHint(`checking the ${name} key…`, 10_000);
+    const check = await checkCredentials(rt.registry, id, key);
+    flashHint("", 1);
+    if (check.status === "rejected") {
+      print(c.red(`✗ ${name} rejected the key: ${truncateEnd(oneLine(check.message ?? ""), 160)}`));
+      print(c.gray(`  Nothing was saved. Try again with /login ${id}.`));
+      redraw();
+      return;
+    }
+    await authStore.set(id, key);
+    rt.registry.reset(id);
+    print(`${c.green("✓")} Connected ${name}.${check.status === "unknown" ? c.gray(" (could not verify the key now)") : ""}`);
+    const override = rt.registry.keyOverride(id);
+    if (override) print(c.yellow(`  ! ${override === "config" ? "The key in your config" : override} takes precedence over the saved key.`));
+    // Keep a model the user chose explicitly; otherwise switch to the new provider.
+    const chosen = session?.meta.model ?? draft.model ?? rt.config.model;
+    let usable = false;
+    try {
+      usable = Boolean(chosen && rt.registry.hasCredentials(parseModelRef(chosen).provider));
+    } catch {
+      // unparsable model reference
+    }
+    if (chosen && usable) {
+      print(c.gray(`  Still using ${chosen}. /model switches models.`));
+      redraw();
+      return;
+    }
+    const def = PRESETS[id]?.defaultModel;
+    if (def) {
+      await setModel(`${id}/${def}`);
+      return;
+    }
+    openModal(
+      () =>
+        new TextPrompt({
+          title: `Model on ${name}`,
+          body: [c.gray(`List the models with: usta models ${id} --remote`)],
+          placeholder: "model id",
+          onDone: (m) => {
+            closeModal();
+            if (m?.trim()) void setModel(`${id}/${m.trim()}`);
           },
         }),
     );
@@ -603,6 +734,7 @@ export async function runRepl(opts: ReplOptions): Promise<number> {
       if (session) await session.update({ model: ref });
       else draft.model = ref;
       modelInfo = info;
+      void stateStore.setLastModel(ref).catch(() => {});
       print(c.gray(`  model → ${ref} (${formatTokens(info.contextWindow)} context${info.source === "default" ? ", unknown model: defaults assumed" : ""})`));
     } catch (err) {
       print(c.red(`✗ ${(err as Error).message}`));
@@ -925,28 +1057,9 @@ export async function runRepl(opts: ReplOptions): Promise<number> {
     },
     {
       name: "login",
-      args: "<provider>",
-      description: "Save an API key for a provider",
-      run: (a) => {
-        const provider = a.trim() || "anthropic";
-        openModal(
-          () =>
-            new TextPrompt({
-              title: `API key for ${provider}`,
-              onDone: (key) => {
-                closeModal();
-                if (!key?.trim()) return;
-                void authStore.set(provider, key.trim()).then(() => {
-                  rt.registry.reset(provider);
-                  print(c.gray(`  Saved the key for ${provider} in ${authStore.file()}.`));
-                  if (!currentModel()) print(c.gray(`  Pick a model with /model.`));
-                  refreshModelInfo();
-                  redraw();
-                });
-              },
-            }),
-        );
-      },
+      args: "[provider]",
+      description: "Connect a provider (save its API key)",
+      run: (a) => connectProvider(a.trim() || undefined),
     },
     { name: "verbose", description: "Toggle verbose output", run: () => toggleVerbose() },
     { name: "exit", aliases: ["quit", "q"], description: "Exit", run: () => exitResolve(0) },
@@ -1124,7 +1237,11 @@ export async function runRepl(opts: ReplOptions): Promise<number> {
   };
 
   redraw();
-  if (opts.prompt) void startTurn(opts.prompt);
+  if (!currentModel()) {
+    // First run: connect a provider before anything else; keep the prompt for later.
+    if (opts.prompt) editor.setValue(opts.prompt);
+    connectProvider();
+  } else if (opts.prompt) void startTurn(opts.prompt);
 
   const onTerm = () => exitResolve(130);
   process.on("SIGTERM", onTerm);

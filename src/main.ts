@@ -1,13 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { globalConfigFiles, projectConfigFiles } from "./config/config.ts";
+import { globalConfigFiles, loadConfig, projectConfigFiles } from "./config/config.ts";
 import { paths } from "./config/paths.ts";
 import { authStore, trustStore } from "./config/store.ts";
 import type { Effort } from "./core/types.ts";
 import { EFFORT_LEVELS } from "./core/types.ts";
 import type { Mode } from "./permission/permission.ts";
 import { catalogModels } from "./provider/catalog.ts";
-import { PRESETS } from "./provider/registry.ts";
+import { PRESETS, ProviderRegistry, checkCredentials } from "./provider/registry.ts";
 import { Runtime } from "./runtime.ts";
 import { exportMarkdown } from "./session/export.ts";
 import { c, setColor } from "./ui/ansi.ts";
@@ -240,7 +240,7 @@ async function readSecret(prompt: string): Promise<string> {
   });
 }
 
-async function authCommand(p: Parsed): Promise<number> {
+async function authCommand(p: Parsed, cwd: string): Promise<number> {
   const [sub = "list", provider] = p.positional;
   if (sub === "list") {
     const saved = authStore.all();
@@ -253,10 +253,19 @@ async function authCommand(p: Parsed): Promise<number> {
   }
   if (!provider) throw new Error(`usage: usta auth ${sub} <provider>`);
   if (sub === "login") {
-    const key = flag(p, "key") ?? (await readSecret(`API key for ${provider}: `));
+    const key = (flag(p, "key") ?? (await readSecret(`API key for ${provider}: `))).replace(/\s+/g, "");
     if (!key) throw new Error("no key given");
+    const root = Runtime.findRoot(cwd);
+    const registry = new ProviderRegistry(loadConfig({ root, cwd, trusted: trustStore.isTrusted(root) }).config);
+    const check = await checkCredentials(registry, provider, key);
+    if (check.status === "rejected") {
+      console.error(c.red(`✗ ${registry.name(provider)} rejected the key: ${check.message}`));
+      return 1;
+    }
     await authStore.set(provider, key);
-    console.log(`Saved to ${authStore.file()} (readable only by you).`);
+    console.log(`${check.status === "ok" ? "The key works. " : ""}Saved to ${authStore.file()} (readable only by you).`);
+    const override = registry.keyOverride(provider);
+    if (override) console.log(c.yellow(`${override === "config" ? "The key in your config" : override} takes precedence over the saved key.`));
     return 0;
   }
   if (sub === "logout") {
@@ -366,7 +375,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     case "models":
       return modelsCommand(p, cwd);
     case "auth":
-      return authCommand(p);
+      return authCommand(p, cwd);
     case "config":
       return configCommand(p, cwd);
     case "trust":

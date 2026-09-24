@@ -26,6 +26,7 @@
 - **Hook'lar:** `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `Stop`, `SessionStart`. Örn. her düzenlemeden sonra formatlayıcı çalıştır, ajan bitirmeden önce testleri koş ve kırmızıysa geri gönder.
 - **Alt ajanlar (sub-agent):** `explore` (salt okunur, hızlı keşif) ve `general`; Markdown dosyalarıyla kendi ajanlarınızı tanımlayın. Paralel çalışabilirler.
 - **MCP:** stdio ve Streamable HTTP MCP sunucuları.
+- **LSP geri bildirimi:** düzenlemeden sonra dil sunucusunun (pyright, gopls, clangd; isteğe bağlı TypeScript, rust-analyzer) bulduğu **yeni** hatalar modele otomatik iletilir; dosyada zaten var olan hatalar gürültü yapmaz.
 - **Claude Code uyumluluğu:** `CLAUDE.md`, `.claude/agents`, `.claude/commands`, `.claude/skills` dosyalarını da okur; mevcut yapılandırmanız doğrudan çalışır.
 - **Üç kullanım biçimi:** etkileşimli terminal arayüzü, betik/CI için `usta run` (metin veya JSONL olay akışı) ve `usta serve` ile HTTP + SSE API ile yerleşik web arayüzü.
 - **Uzun oturumlar:** bağlam dolarken konuşma otomatik özetlenir (`/compact`), JSONL oturum kayıtları çökmelere dayanıklıdır, maliyet ve token kullanımı canlı gösterilir.
@@ -158,7 +159,7 @@ Ayarlar şu sırayla birleştirilir (sonraki kazanır): `~/.config/usta/config.j
 
 Önemli anahtarlar: `model`, `smallModel` (yalnızca oturum başlığı için ucuz model), `effort`, `providers`, `permission`, `agents`, `defaultAgent`, `mcp`, `hooks`, `instructions`, `compaction` (`auto`, `threshold`, `maxContextTokens`), `snapshots`, `tools` (araç aç/kapa), `maxSteps`, `maxOutputTokens`, `notify`.
 
-**Güven modeli:** Bir depo, kendi `.usta/config.json` dosyasıyla hook, MCP sunucusu, izin kuralı veya sağlayıcı (`baseURL`, API anahtarı yönlendirmesi) tanımlayabilir — bunlar kod çalıştırabileceği veya anahtarınızı başka yere gönderebileceği için, proje **güvenilir** işaretlenene kadar uygulanmaz. usta ilk açılışta sorar; `usta trust` / `usta untrust` ile de yönetilir.
+**Güven modeli:** Bir depo, kendi `.usta/config.json` dosyasıyla hook, MCP sunucusu, dil sunucusu, izin kuralı veya sağlayıcı (`baseURL`, API anahtarı yönlendirmesi) tanımlayabilir — bunlar kod çalıştırabileceği veya anahtarınızı başka yere gönderebileceği için, proje **güvenilir** işaretlenene kadar uygulanmaz. usta ilk açılışta sorar; `usta trust` / `usta untrust` ile de yönetilir.
 
 ## İzinler
 
@@ -208,6 +209,40 @@ Hook'lar olay verisini stdin'den JSON olarak alan kabuk komutlarıdır. `USTA_EV
 ```
 
 Araçlar `mcp__sunucu__araç` adıyla sunulur ve varsayılan olarak onay ister. `usta mcp` bağlantı durumunu ve araç listesini gösterir.
+
+## Dil sunucuları (LSP) ile hata geri bildirimi
+
+Ajan bir dosyayı düzenlediğinde (`edit`, `write`, `apply_patch`), usta dosyayı ilgili dil sunucusuna gönderir ve **düzenlemenin yol açtığı hataları** araç sonucuna ekler; model bir sonraki adımda bunları görüp düzeltir:
+
+```
+<diagnostics file="app.py">
+ERROR [5:14] Argument of type "Literal['two']" cannot be assigned to parameter "b" of type "int" … (Pyright reportArgumentType)
+</diagnostics>
+(1 other error in this file predate your changes.)
+```
+
+Dosya okunduğu anda sunucuda açılır ve mevcut hataları kaydedilir; sonraki raporlarda yalnızca yeni hatalar gösterilir (önceden var olan "import çözülemedi" gibi gürültüler modeli oyalamaz). Hatalar satır numarasından bağımsız (kod + mesaj) karşılaştırılır, uyarılar gösterilmez. Arayüzde düzenleme satırında `⚠ 2 new errors` görünür, `/status` sunucuların durumunu listeler.
+
+| Sunucu | Uzantılar | Varsayılan |
+|---|---|---|
+| `python` — `pyright-langserver` / `basedpyright-langserver` | `.py`, `.pyi` | PATH'te varsa açık |
+| `go` — `gopls` | `.go` | PATH'te varsa açık |
+| `clangd` | `.c`, `.h`, `.cpp`, … | PATH'te varsa açık |
+| `typescript` — `typescript-language-server` | `.ts`, `.tsx`, `.js`, … | **İsteğe bağlı** |
+| `rust` — `rust-analyzer` | `.rs` | **İsteğe bağlı** |
+
+TypeScript ve Rust sunucuları proje kodu çalıştırabildiği için (tsserver eklentileri `node_modules`'tan yüklenir; rust-analyzer build script ve proc-macro çalıştırır) kendiniz açmalısınız:
+
+```jsonc
+"lsp": {
+  "typescript": true,
+  "rust": true,
+  "go": false,                                   // kapat
+  "ruby": { "command": ["ruby-lsp"], "extensions": [".rb"] }   // özel sunucu
+}
+```
+
+`"lsp": true` tüm yerleşik sunucuları, `"lsp": false` hepsini kapatır. Proje config'indeki `lsp` ayarı komut çalıştırdığı için yalnızca güvenilir projelerde uygulanır.
 
 ## Oturumlar, geri alma ve sıkıştırma
 
@@ -274,6 +309,7 @@ src/
   permission/                    kural motoru ve bash ayrıştırıcı
   session/                       JSONL oturum deposu, gölge git anlık görüntüleri, dışa aktarma
   mcp/ hooks/ commands/          uzantılar
+  lsp/                           dil sunucusu istemcisi ve düzenleme sonrası tanılamalar
   ui/                            terminal arayüzü (canlı bölge, editör, markdown, modallar)
   server/                        HTTP + SSE API ve web arayüzü
 ```

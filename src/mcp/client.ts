@@ -224,6 +224,7 @@ export class McpClient {
       const timeout = opts.timeoutMs ?? this.cfg.timeoutMs ?? 120_000;
       const timer = setTimeout(() => {
         this.pending.delete(id);
+        opts.signal?.removeEventListener("abort", onAbort);
         reject(new Error(`MCP request ${method} timed out after ${Math.round(timeout / 1000)}s`));
       }, timeout);
       const onAbort = () => {

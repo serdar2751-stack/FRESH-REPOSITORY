@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { Config } from "../config/config.ts";
 import type { Bus } from "../core/bus.ts";
 import type { AgentEvent, TurnEndReason } from "../core/events.ts";
@@ -88,6 +89,11 @@ export interface EngineOptions {
   interactive?: () => boolean;
   /** Extra system prompt text (e.g. MCP server instructions). */
   promptExtra?: () => string;
+  /** Language servers: files are opened on read, new errors are reported after edits. */
+  lsp?: {
+    touch(file: string): void;
+    diagnose(files: string[]): Promise<{ text: string; errors: number } | undefined>;
+  };
 }
 
 const MAX_RETRIES = 8;
@@ -774,7 +780,34 @@ export class Engine {
       for (const e of hook.errors) this.emit({ type: "notice", sessionId: session.id, level: "warn", message: e });
       if (hook.blocked && hook.message) result = { ...result, output: `${result.output}\n\n<hook-feedback>\n${hook.message}\n</hook-feedback>` };
     }
+    if (this.opts.lsp && !result.isError && result.metadata && !signal.aborted) result = await this.withDiagnostics(tool, result, signal);
     return finish(result);
+  }
+
+  /** Open files the agent reads; append errors introduced by edits (after hooks, e.g. formatters, ran). */
+  private async withDiagnostics(tool: AnyTool, result: ToolResult, signal: AbortSignal): Promise<ToolResult> {
+    const lsp = this.opts.lsp!;
+    const md = result.metadata!;
+    const rels = [...(typeof md.path === "string" ? [md.path] : []), ...(Array.isArray(md.files) ? md.files.filter((f): f is string => typeof f === "string") : [])];
+    if (!rels.length) return result;
+    const files = rels.map((r) => path.resolve(this.opts.root, r));
+    if (tool.readOnly) {
+      for (const f of files) lsp.touch(f);
+      return result;
+    }
+    let onAbort = () => {};
+    const aborted = new Promise<undefined>((resolve) => {
+      onAbort = () => resolve(undefined);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+    let report: { text: string; errors: number } | undefined;
+    try {
+      report = await Promise.race([lsp.diagnose(files).catch(() => undefined), aborted]);
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+    }
+    if (!report?.text) return result;
+    return { ...result, output: `${result.output}\n\n${report.text}`, metadata: { ...md, diagnostics: report.errors } };
   }
 
   // ----- reminders (plan mode, agent switches) -----

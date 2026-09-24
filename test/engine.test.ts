@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import type { AgentEvent } from "../src/core/events.ts";
 import type { Config } from "../src/config/config.ts";
 import { Runtime } from "../src/runtime.ts";
@@ -11,6 +12,7 @@ import { MockLLM } from "./helpers/mock-llm.ts";
 
 const mock = new MockLLM();
 let baseURL = "";
+const LSP_SERVER = fileURLToPath(new URL("./helpers/lsp-server.mjs", import.meta.url));
 
 before(async () => {
   baseURL = await mock.start();
@@ -43,6 +45,8 @@ async function runtime(cwd: string, over: { config?: Config; yolo?: boolean; int
         anthropic: { apiKey: "test-key", baseURL },
         openai: { apiKey: "test-key", baseURL: baseURL + "/v1" },
       },
+      // Real language servers may be installed; tests opt in with a fake one.
+      lsp: false,
       ...over.config,
     },
     mcp: false,
@@ -356,6 +360,31 @@ describe("engine", () => {
     assert.ok(req.tools.some((t: { function: { name: string } }) => t.function.name === "apply_patch"));
     assert.equal(req.reasoning_effort, "medium");
     assert.equal(mock.requests[1]!.body.messages.at(-1).role, "tool");
+  });
+
+  it("reports errors an edit introduced, from a language server", async () => {
+    const dir = await project();
+    await fs.writeFile(path.join(dir, "notes.txt"), "ERROR old\nfine\n");
+    const { rt, events } = await runtime(dir, {
+      yolo: true,
+      config: { lsp: { fake: { command: [process.execPath, LSP_SERVER], extensions: [".txt"] } } },
+    });
+    mock.push(
+      { blocks: [{ type: "tool_use", name: "read", input: { file_path: "notes.txt" } }] },
+      { blocks: [{ type: "tool_use", name: "edit", input: { file_path: "notes.txt", old_string: "fine", new_string: "fine\nERROR new" } }] },
+      { blocks: [{ type: "text", text: "Done." }] },
+    );
+    try {
+      const s = await rt.newSession();
+      await rt.engine.prompt(s, { text: "add a line" }, { signal: signal() });
+      const result = mock.requests[2]!.body.messages.at(-1).content[0].content as string;
+      assert.match(result, /<diagnostics file="notes.txt">\nERROR \[3:1\] found ERROR: ERROR new \(fake error\)\n<\/diagnostics>/);
+      assert.match(result, /1 other error in this file predate your changes/);
+      const end = events.find((e) => e.type === "tool.end" && e.name === "edit");
+      assert.equal(end?.type === "tool.end" && end.result.metadata?.diagnostics, 1);
+    } finally {
+      await rt.close();
+    }
   });
 
   it("accepts custom tools with config-driven permissions", async () => {

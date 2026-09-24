@@ -960,7 +960,7 @@ export async function runRepl(opts: ReplOptions): Promise<number> {
     },
     {
       name: "status",
-      description: "Show model, config, MCP and permission status",
+      description: "Show model, config, MCP, language server and permission status",
       run: async () => {
         const ref = currentModel();
         print(`  ${c.bold("model")}     ${ref ?? "(none)"}${modelInfo ? c.gray(` · ${formatTokens(modelInfo.contextWindow)} ctx · ${modelInfo.source}`) : ""}`);
@@ -973,6 +973,13 @@ export async function runRepl(opts: ReplOptions): Promise<number> {
         print(`  ${c.bold("providers")} ${providers.join(", ") || c.yellow("none configured")}`);
         for (const st of rt.mcp.statuses.values()) print(`  ${c.bold("mcp")}       ${st.name}: ${st.status}${st.tools ? ` (${st.tools} tools)` : ""}${st.error ? c.red(" " + truncateEnd(st.error, 100)) : ""}`);
         if (rt.skills.size) print(`  ${c.bold("skills")}    ${[...rt.skills.keys()].join(", ")}`);
+        const servers = rt.lsp.status();
+        if (!servers.length) print(`  ${c.bold("lsp")}       ${c.gray("off")}`);
+        for (const st of servers) {
+          const color = st.state === "ready" ? c.green : st.state === "failed" ? c.red : c.gray;
+          const docs = st.documents ? c.gray(` · ${st.documents} open`) : "";
+          print(`  ${c.bold("lsp")}       ${st.name}: ${color(st.state)}${docs}${st.error ? c.red(" " + truncateEnd(oneLine(st.error), 100)) : ""}`);
+        }
       },
     },
     {

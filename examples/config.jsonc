@@ -66,6 +66,15 @@
     "docs": { "type": "http", "url": "https://example.com/mcp", "headers": { "Authorization": "env:DOCS_TOKEN" } }
   },
 
+  // Language servers report the errors an edit introduced. Pyright, gopls and
+  // clangd start automatically when installed; TypeScript and rust-analyzer can
+  // run project code (tsserver plugins, build scripts), so they are opt-in.
+  "lsp": {
+    "typescript": true
+    // "go": false,
+    // "ruby": { "command": ["ruby-lsp"], "extensions": [".rb"] }
+  },
+
   // Hooks receive the event as JSON on stdin. Exit 2 blocks (PreToolUse) or
   // sends feedback to the model (PostToolUse, Stop).
   "hooks": {

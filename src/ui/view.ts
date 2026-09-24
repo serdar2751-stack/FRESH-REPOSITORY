@@ -112,7 +112,9 @@ export function formatToolResult(name: string, title: string, r: ToolResultPart,
       const add = Number(md.additions ?? 0);
       const del = Number(md.deletions ?? 0);
       const verb = md.created ? "Created" : "Updated";
-      lines.push(branch(c.gray(`${verb} · `) + c.green(`+${add}`) + " " + c.red(`-${del}`)));
+      const errs = Number(md.diagnostics ?? 0);
+      const diag = errs ? c.gray(" · ") + c.yellow(`⚠ ${errs} new error${errs === 1 ? "" : "s"}`) : "";
+      lines.push(branch(c.gray(`${verb} · `) + c.green(`+${add}`) + " " + c.red(`-${del}`) + diag));
       if (typeof md.diff === "string" && md.diff) lines.push(...renderDiff(md.diff, width, verbose ? 400 : md.created ? 8 : 24));
       break;
     }

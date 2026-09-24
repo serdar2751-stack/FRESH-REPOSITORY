@@ -61,6 +61,23 @@ export interface McpServerConfig {
   timeoutMs?: number;
 }
 
+export interface LspServerConfig {
+  /** Command and arguments, e.g. ["pyright-langserver", "--stdio"]. */
+  command?: string[];
+  /** File extensions the server handles, e.g. [".py"]. */
+  extensions?: string[];
+  languageId?: string;
+  env?: Record<string, string>;
+  /** `initializationOptions` sent with initialize. */
+  initialization?: unknown;
+  /** Answers to workspace/configuration requests. */
+  settings?: Record<string, unknown>;
+  disabled?: boolean;
+}
+
+/** true: every built-in server; false: none; or per-server switches and custom servers. */
+export type LspConfig = boolean | Record<string, boolean | LspServerConfig>;
+
 export const HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"] as const;
 export type HookEvent = (typeof HOOK_EVENTS)[number];
 
@@ -94,10 +111,12 @@ export interface Config {
   tools?: Record<string, boolean>;
   /** Desktop notification (terminal OSC 9) when a long turn finishes (default true). */
   notify?: boolean;
+  /** Language servers that report errors after edits. */
+  lsp?: LspConfig;
 }
 
 /** Keys an untrusted project config may not set: they run code or redirect credentials. */
-export const PRIVILEGED_KEYS = ["providers", "permission", "hooks", "mcp"] as const;
+export const PRIVILEGED_KEYS = ["providers", "permission", "hooks", "mcp", "lsp"] as const;
 
 export interface ConfigSource {
   path: string;

@@ -152,7 +152,7 @@ export const readTool: Tool<ReadInput> = {
     return {
       output: body + (notes.length ? `\n\n(${notes.join(" ")})` : ""),
       title: rel,
-      metadata: { lines: lines.length, total, offset },
+      metadata: { lines: lines.length, total, offset, path: rel },
     };
   },
 };

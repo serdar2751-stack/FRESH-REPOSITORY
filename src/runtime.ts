@@ -10,6 +10,7 @@ import { trustStore } from "./config/store.ts";
 import { Bus } from "./core/bus.ts";
 import type { AgentEvent } from "./core/events.ts";
 import { HookRunner } from "./hooks/hooks.ts";
+import { LspManager } from "./lsp/manager.ts";
 import { McpManager } from "./mcp/client.ts";
 import { defaultRules, type Mode, PermissionManager, type PermissionReply, type PermissionRequest, type Rule, rulesFromConfig } from "./permission/permission.ts";
 import { ProviderRegistry } from "./provider/registry.ts";
@@ -56,6 +57,7 @@ export class Runtime {
   readonly store: SessionStore;
   readonly engine: Engine;
   readonly mcp: McpManager;
+  readonly lsp: LspManager;
   readonly trusted: boolean;
   interactive: boolean;
   private env?: Promise<EnvironmentInfo>;
@@ -79,6 +81,7 @@ export class Runtime {
     this.hooks = new HookRunner(config.hooks, cwd, root);
     this.store = new SessionStore(root, opts.sessionDir);
     this.mcp = new McpManager(config.mcp, cwd);
+    this.lsp = new LspManager({ root, config: config.lsp });
     const rules: Rule[] = [...defaultRules(), ...rulesFromConfig(config.permission, "config")];
     this.permissions = new PermissionManager({
       rules,
@@ -105,6 +108,7 @@ export class Runtime {
       extraTools: () => [...this.mcp.tools(), ...(opts.tools ?? [])],
       interactive: () => this.interactive,
       promptExtra: () => this.mcp.instructions(),
+      lsp: this.lsp.enabled ? this.lsp : undefined,
     });
   }
 
@@ -219,6 +223,6 @@ export class Runtime {
 
   async close(): Promise<void> {
     this.processes.killAll();
-    await this.mcp.close();
+    await Promise.all([this.mcp.close(), this.lsp.close()]);
   }
 }

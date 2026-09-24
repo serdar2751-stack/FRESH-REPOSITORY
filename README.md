@@ -45,6 +45,8 @@ npm link             # "usta" komutunu PATH'e ekler
 
 Geliştirme sırasında derlemeden de çalıştırabilirsiniz: `node src/cli.ts` (Node 22.18+ TypeScript'i doğrudan çalıştırır) veya `bun src/cli.ts`.
 
+**Tek dosyalık çalıştırılabilir:** [Bun](https://bun.sh) yüklüyse `npm run build:bin` Node gerektirmeyen tek bir `dist/bin/usta` dosyası üretir (başka platform için: `bun build --compile --target=bun-darwin-arm64 src/cli.ts --outfile usta`; hedefler `bun-linux-x64`, `bun-linux-arm64`, `bun-darwin-x64`, `bun-windows-x64`).
+
 ## Hızlı başlangıç
 
 ```bash

@@ -1,10 +1,11 @@
 /** ANSI styling with NO_COLOR / FORCE_COLOR support. */
 
-function detectColor(): boolean {
+/** Whether to style output written to `stream` (FORCE_COLOR > NO_COLOR > TERM=dumb > TTY). */
+export function detectColor(stream: { isTTY?: boolean } = process.stdout): boolean {
   if (process.env.FORCE_COLOR && process.env.FORCE_COLOR !== "0") return true;
   if (process.env.NO_COLOR !== undefined && process.env.NO_COLOR !== "") return false;
   if (process.env.TERM === "dumb") return false;
-  return Boolean(process.stdout.isTTY);
+  return Boolean(stream.isTTY);
 }
 
 export let colorEnabled = detectColor();

@@ -7,6 +7,7 @@ import { authStore } from "../config/store.ts";
 import { AnthropicProvider, type AnthropicOptions } from "./anthropic.ts";
 import { catalogLookup, catalogLookupAny, guessModel } from "./catalog.ts";
 import { OpenAICompatibleProvider, type OpenAIOptions } from "./openai.ts";
+import { OpenAIResponsesProvider } from "./openai-responses.ts";
 import type { ApiFormat, ModelInfo, Provider } from "./types.ts";
 
 export interface Preset {
@@ -31,7 +32,9 @@ export const PRESETS: Record<string, Preset> = {
     env: ["OPENAI_API_KEY"],
     catalog: "openai",
     defaultModel: "gpt-5",
-    options: { maxTokensField: "max_completion_tokens", promptCacheKey: true },
+    // Responses API: encrypted reasoning survives across tool calls. Set
+    // `options.api: "chat"` to use Chat Completions instead.
+    options: { api: "responses", maxTokensField: "max_completion_tokens", promptCacheKey: true },
   },
   openrouter: {
     name: "OpenRouter",
@@ -167,13 +170,14 @@ export class ProviderRegistry {
         headers,
       });
     } else {
-      p = new OpenAICompatibleProvider({
+      const o: OpenAIOptions = {
         ...(options as Partial<OpenAIOptions>),
         id,
         apiKey: key ?? (preset?.keyless || cfg.baseURL ? "not-needed" : undefined),
         baseURL,
         headers,
-      });
+      };
+      p = o.api === "responses" ? new OpenAIResponsesProvider(o) : new OpenAICompatibleProvider(o);
     }
     this.instances.set(id, p);
     return p;

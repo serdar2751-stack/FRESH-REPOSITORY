@@ -20,6 +20,11 @@
         "webSearch": false
       }
     },
+    // OpenAI uses the Responses API (stateless, encrypted reasoning kept between tool calls).
+    // "api": "chat" switches to Chat Completions.
+    "openai": {
+      "options": { "api": "responses" }
+    },
     "openrouter": {},
     // Any OpenAI-compatible endpoint: vLLM, llama.cpp, LiteLLM, a company gateway...
     "local": {

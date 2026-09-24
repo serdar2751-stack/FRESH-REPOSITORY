@@ -5,6 +5,7 @@ import type { Effort } from "./core/types.ts";
 import type { Mode } from "./permission/permission.ts";
 import { Runtime } from "./runtime.ts";
 import type { Session } from "./session/session.ts";
+import { detectColor } from "./ui/ansi.ts";
 import { formatCost, formatDuration, formatTokens, oneLine, truncateEnd } from "./util/text.ts";
 
 export interface HeadlessOptions {
@@ -93,6 +94,11 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
 
   const out = process.stdout;
   const err = process.stderr;
+  const color = detectColor(err);
+  const sgr = (code: number) => (s: string) => (color ? `\x1b[${code}m${s}\x1b[0m` : s);
+  const dim = sgr(2);
+  const red = sgr(31);
+  const yellow = sgr(33);
   const isMain = (id: string) => id === session.id;
   let atLineStart = true;
   const write = (s: string) => {
@@ -117,16 +123,16 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
         if (!atLineStart) write("\n");
         break;
       case "tool.start":
-        err.write(`\x1b[2m● ${e.name} ${truncateEnd(oneLine(e.title), 160)}\x1b[0m\n`);
+        err.write(dim(`● ${e.name} ${truncateEnd(oneLine(e.title), 160)}`) + "\n");
         break;
       case "tool.end":
-        if (e.result.isError) err.write(`\x1b[31m  └ ${truncateEnd(oneLine(e.result.output), 300)}\x1b[0m\n`);
+        if (e.result.isError) err.write(red(`  └ ${truncateEnd(oneLine(e.result.output), 300)}`) + "\n");
         break;
       case "notice":
-        err.write(`${e.level === "error" ? "\x1b[31m✗" : e.level === "warn" ? "\x1b[33m!" : "\x1b[2mi"} ${e.message}\x1b[0m\n`);
+        err.write((e.level === "error" ? red(`✗ ${e.message}`) : e.level === "warn" ? yellow(`! ${e.message}`) : dim(`i ${e.message}`)) + "\n");
         break;
       case "retry":
-        err.write(`\x1b[2m  ↻ retrying in ${formatDuration(e.delayMs)}: ${truncateEnd(oneLine(e.error), 200)}\x1b[0m\n`);
+        err.write(dim(`  ↻ retrying in ${formatDuration(e.delayMs)}: ${truncateEnd(oneLine(e.error), 200)}`) + "\n");
         break;
       default:
         break;
@@ -138,7 +144,7 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
   const onSigint = () => {
     interrupts++;
     if (interrupts === 1) {
-      err.write("\n\x1b[33mInterrupting… (press Ctrl+C again to force quit)\x1b[0m\n");
+      err.write("\n" + yellow("Interrupting… (press Ctrl+C again to force quit)") + "\n");
       controller.abort();
     } else process.exit(130);
   };
@@ -151,7 +157,9 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
     if (opts.format === "text") {
       const tokens = res.usage.input + res.usage.cacheRead + res.usage.cacheWrite;
       err.write(
-        `\x1b[2m${res.reason === "done" ? "✓" : res.reason} · ${res.steps} steps · ${formatTokens(tokens)} in · ${formatTokens(res.usage.output)} out${res.cost !== undefined ? ` · ${formatCost(res.cost)}` : ""}${res.changes?.length ? ` · ${res.changes.length} files changed` : ""} · session ${session.id}\x1b[0m\n`,
+        dim(
+          `${res.reason === "done" ? "✓" : res.reason} · ${res.steps} steps · ${formatTokens(tokens)} in · ${formatTokens(res.usage.output)} out${res.cost !== undefined ? ` · ${formatCost(res.cost)}` : ""}${res.changes?.length ? ` · ${res.changes.length} files changed` : ""} · session ${session.id}`,
+        ) + "\n",
       );
     }
     code = res.reason === "done" ? 0 : res.reason === "aborted" ? 130 : res.reason === "max_steps" ? 3 : 1;

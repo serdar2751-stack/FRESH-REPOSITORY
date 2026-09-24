@@ -304,10 +304,46 @@ describe("engine", () => {
     assert.equal(res.text, "Fixed the tests.");
   });
 
-  it("works with OpenAI-format providers and apply_patch", async () => {
+  it("works with OpenAI through the Responses API and apply_patch", async () => {
     const dir = await project();
     await fs.writeFile(path.join(dir, "m.py"), "def f():\n    return 1\n");
     const { rt } = await runtime(dir, { yolo: true, model: "openai/gpt-5" });
+    mock.push(
+      {
+        blocks: [
+          { type: "thinking", thinking: "Patch the return value." },
+          { type: "tool_use", name: "apply_patch", input: { patch: "*** Begin Patch\n*** Update File: m.py\n@@ def f():\n-    return 1\n+    return 2\n*** End Patch" } },
+        ],
+        model: "gpt-5-2025-08-07",
+      },
+      { blocks: [{ type: "text", text: "Patched." }] },
+    );
+    const s = await rt.newSession();
+    const res = await rt.engine.prompt(s, { text: "return 2" }, { signal: signal() });
+    assert.equal(res.text, "Patched.");
+    assert.equal(await fs.readFile(path.join(dir, "m.py"), "utf8"), "def f():\n    return 2\n");
+    const req = mock.requests[0]!;
+    assert.equal(req.path, "/v1/responses");
+    assert.ok(req.body.tools.some((t: { name: string }) => t.name === "apply_patch"));
+    assert.ok(!req.body.tools.some((t: { name: string }) => t.name === "edit"));
+    assert.deepEqual(req.body.reasoning, { effort: "medium", summary: "auto" });
+    assert.equal(req.body.store, false);
+    // The dated snapshot that served the turn still gets its encrypted reasoning back.
+    const next = mock.requests[1]!.body.input;
+    assert.equal(next[1].type, "reasoning");
+    assert.equal(next[2].type, "function_call");
+    assert.equal(next.at(-1).type, "function_call_output");
+    assert.equal(next.at(-1).call_id, next[2].call_id);
+  });
+
+  it("works with Chat Completions providers", async () => {
+    const dir = await project();
+    await fs.writeFile(path.join(dir, "m.py"), "def f():\n    return 1\n");
+    const { rt } = await runtime(dir, {
+      yolo: true,
+      model: "openai/gpt-5",
+      config: { providers: { openai: { apiKey: "test-key", baseURL: baseURL + "/v1", options: { api: "chat" } } } },
+    });
     mock.push(
       { blocks: [{ type: "tool_use", name: "apply_patch", input: { patch: "*** Begin Patch\n*** Update File: m.py\n@@ def f():\n-    return 1\n+    return 2\n*** End Patch" } }] },
       { blocks: [{ type: "text", text: "Patched." }] },
@@ -318,7 +354,6 @@ describe("engine", () => {
     assert.equal(await fs.readFile(path.join(dir, "m.py"), "utf8"), "def f():\n    return 2\n");
     const req = mock.requests[0]!.body;
     assert.ok(req.tools.some((t: { function: { name: string } }) => t.function.name === "apply_patch"));
-    assert.ok(!req.tools.some((t: { function: { name: string } }) => t.function.name === "edit"));
     assert.equal(req.reasoning_effort, "medium");
     assert.equal(mock.requests[1]!.body.messages.at(-1).role, "tool");
   });

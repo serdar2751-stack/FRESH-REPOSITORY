@@ -19,6 +19,7 @@ export { McpClient, McpManager } from "./mcp/client.ts";
 export { PermissionDeniedError, PermissionManager, type Mode, type PermissionReply, type PermissionRequest } from "./permission/permission.ts";
 export { AnthropicProvider } from "./provider/anthropic.ts";
 export { OpenAICompatibleProvider } from "./provider/openai.ts";
+export { OpenAIResponsesProvider } from "./provider/openai-responses.ts";
 export { PRESETS, ProviderRegistry, parseModelRef } from "./provider/registry.ts";
 export { type ChatRequest, type ChatResponse, type ModelInfo, type Provider, ProviderError, type StreamEvent, type ToolSpec } from "./provider/types.ts";
 export { Runtime, type RuntimeOptions } from "./runtime.ts";

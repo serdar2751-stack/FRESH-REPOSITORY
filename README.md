@@ -66,7 +66,7 @@ Model referansı `sağlayıcı/model` biçimindedir: `anthropic/claude-sonnet-5`
 | Sağlayıcı | Ortam değişkeni | Not |
 |---|---|---|
 | `anthropic` | `ANTHROPIC_API_KEY` (veya `ANTHROPIC_AUTH_TOKEN`) | Yerel Messages API adaptörü |
-| `openai` | `OPENAI_API_KEY` | GPT-5 ailesinde `apply_patch` düzenleme aracı kullanılır |
+| `openai` | `OPENAI_API_KEY` | Responses API (durumsuz, şifreli akıl yürütme araç çağrıları arasında korunur); GPT-5 ailesinde `apply_patch` düzenleme aracı |
 | `gemini` | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | OpenAI uyumlu uç nokta |
 | `openrouter` | `OPENROUTER_API_KEY` | Bağlam uzunluğu ve fiyatlar canlı olarak okunur |
 | `deepseek`, `groq`, `mistral`, `xai`, `together`, `fireworks`, `cerebras` | `<AD>_API_KEY` | OpenAI uyumlu |
@@ -88,6 +88,12 @@ Model referansı `sağlayıcı/model` biçimindedir: `anthropic/claude-sonnet-5`
     }
   }
 }
+```
+
+OpenAI sağlayıcısı varsayılan olarak **Responses API**'yi kullanır: istekler `store: false` ile gönderilir (OpenAI tarafında konuşma saklanmaz), modelin akıl yürütmesi şifreli olarak (`reasoning.encrypted_content`) bir sonraki isteğe geri verilir; böylece araç çağrıları arasında düşünce zinciri kopmaz ve akıl yürütme özetleri canlı gösterilir. Şifreli içerik yalnızca onu üreten modele geri gönderilir; sunucu reddederse istek onsuz bir kez tekrarlanır. Chat Completions'a dönmek ya da Responses API'yi destekleyen başka bir uç noktada (ör. Azure OpenAI, ağ geçitleri) açmak için:
+
+```jsonc
+{ "providers": { "openai": { "options": { "api": "chat" } }, "azure": { "format": "openai", "baseURL": "https://…/openai/v1", "options": { "api": "responses" } } } }
 ```
 
 > Ollama kullanıyorsanız bağlam penceresini büyütün (ör. `OLLAMA_CONTEXT_LENGTH=65536`); varsayılan değer ajan kullanımı için çok küçüktür.
@@ -251,7 +257,7 @@ await rt.close();
 ## Geliştirme
 
 ```bash
-npm test            # birim + uçtan uca testler (sahte Anthropic/OpenAI SSE sunucusu ve MCP sunucusu ile)
+npm test            # birim + uçtan uca testler (sahte Anthropic / OpenAI Chat + Responses SSE sunucusu ve MCP sunucusu ile)
 npm run typecheck
 npm run build       # dist/
 ```
@@ -263,7 +269,7 @@ src/
   cli.ts, main.ts, headless.ts   komut satırı, alt komutlar, usta run
   runtime.ts                     config + sağlayıcılar + izinler + araçlar + MCP + oturumları bağlar
   agent/                         engine (ajan döngüsü), system prompt, ajanlar, bağlam dosyaları, @mention
-  provider/                      Anthropic ve OpenAI uyumlu adaptörler, model kataloğu, kayıt
+  provider/                      Anthropic, OpenAI Responses ve OpenAI uyumlu (Chat) adaptörler, model kataloğu, kayıt
   tool/                          read, write, edit, apply_patch, bash(+arka plan), glob, grep, ls, webfetch, todo, task, question, plan, skill
   permission/                    kural motoru ve bash ayrıştırıcı
   session/                       JSONL oturum deposu, gölge git anlık görüntüleri, dışa aktarma

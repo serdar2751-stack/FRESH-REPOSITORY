@@ -1,6 +1,7 @@
 /**
- * A scripted fake of the Anthropic Messages API and the OpenAI Chat
- * Completions API (streaming). Tests queue responses and inspect requests.
+ * A scripted fake of the Anthropic Messages API, the OpenAI Chat Completions
+ * API and the OpenAI Responses API (streaming). Tests queue responses and
+ * inspect requests.
  */
 import http from "node:http";
 import type { AddressInfo } from "node:net";
@@ -14,7 +15,7 @@ export type MockBlock =
 export interface MockTurn {
   blocks: MockBlock[];
   stopReason?: string;
-  usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
+  usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; reasoning?: number };
   model?: string;
   /** Respond with an HTTP error instead. */
   error?: { status: number; type: string; message: string };
@@ -93,6 +94,7 @@ export class MockLLM {
     }
     if (url.startsWith("/v1/messages")) await this.anthropic(turn, body, res);
     else if (url.includes("/chat/completions")) await this.openai(turn, body, res);
+    else if (url.endsWith("/responses")) await this.responses(turn, body, res);
     else {
       res.writeHead(404);
       res.end();
@@ -224,6 +226,76 @@ export class MockLLM {
       },
     });
     res.write("data: [DONE]\n\n");
+    res.end();
+  }
+
+  private async responses(turn: MockTurn, body: any, res: http.ServerResponse): Promise<void> {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    const model = turn.model ?? body.model;
+    let seq = 0;
+    const send = async (type: string, data: Record<string, unknown>) => {
+      res.write(`event: ${type}\ndata: ${JSON.stringify({ type, sequence_number: seq++, ...data })}\n\n`);
+      if (turn.delayMs) await new Promise((r) => setTimeout(r, turn.delayMs));
+    };
+    const base = { id: this.nextId("resp"), object: "response", created_at: 1, model, status: "in_progress", error: null, incomplete_details: null, output: [] };
+    await send("response.created", { response: base });
+    const output: Array<Record<string, unknown>> = [];
+    for (const b of turn.blocks) {
+      const output_index = output.length;
+      if (b.type === "thinking") {
+        const item = { id: this.nextId("rs"), type: "reasoning", summary: [] as unknown[] };
+        await send("response.output_item.added", { output_index, item });
+        await send("response.reasoning_summary_part.added", { item_id: item.id, output_index, summary_index: 0, part: { type: "summary_text", text: "" } });
+        for (const piece of splitPieces(b.thinking)) {
+          await send("response.reasoning_summary_text.delta", { item_id: item.id, output_index, summary_index: 0, delta: piece });
+        }
+        const done = { ...item, summary: [{ type: "summary_text", text: b.thinking }], encrypted_content: b.signature ?? `enc-${item.id}` };
+        await send("response.output_item.done", { output_index, item: done });
+        output.push(done);
+      } else if (b.type === "text") {
+        const item = { id: this.nextId("msg"), type: "message", role: "assistant", status: "in_progress", content: [] as unknown[] };
+        await send("response.output_item.added", { output_index, item });
+        for (const piece of splitPieces(b.text)) {
+          await send("response.output_text.delta", { item_id: item.id, output_index, content_index: 0, delta: piece, logprobs: [] });
+        }
+        const done = { ...item, status: "completed", content: [{ type: "output_text", text: b.text, annotations: [] }] };
+        await send("response.output_item.done", { output_index, item: done });
+        output.push(done);
+      } else if (b.type === "tool_use") {
+        const item = { id: this.nextId("fc"), type: "function_call", call_id: b.id ?? this.nextId("call"), name: b.name, arguments: "", status: "in_progress" };
+        await send("response.output_item.added", { output_index, item });
+        const json = JSON.stringify(b.input);
+        for (const piece of splitPieces(json, 13)) {
+          await send("response.function_call_arguments.delta", { item_id: item.id, output_index, delta: piece });
+        }
+        const done = { ...item, arguments: json, status: "completed" };
+        await send("response.output_item.done", { output_index, item: done });
+        output.push(done);
+      }
+    }
+    if (turn.midStreamError) {
+      await send("error", { code: turn.midStreamError.type, message: turn.midStreamError.message, param: null });
+      res.end();
+      return;
+    }
+    const u = turn.usage ?? {};
+    const stop = turn.stopReason;
+    const incomplete = stop === "max_tokens" || stop === "length" ? "max_output_tokens" : stop === "refusal" || stop === "content_filter" ? "content_filter" : undefined;
+    await send(incomplete ? "response.incomplete" : "response.completed", {
+      response: {
+        ...base,
+        status: incomplete ? "incomplete" : "completed",
+        incomplete_details: incomplete ? { reason: incomplete } : null,
+        output,
+        usage: {
+          input_tokens: (u.input ?? 100) + (u.cacheRead ?? 0),
+          input_tokens_details: { cached_tokens: u.cacheRead ?? 0 },
+          output_tokens: u.output ?? 50,
+          output_tokens_details: { reasoning_tokens: u.reasoning ?? 0 },
+          total_tokens: 0,
+        },
+      },
+    });
     res.end();
   }
 }

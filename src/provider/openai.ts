@@ -16,6 +16,8 @@ import {
 
 export interface OpenAIOptions {
   id: string;
+  /** "chat" (Chat Completions, the default) or "responses" (OpenAI Responses API). */
+  api?: "chat" | "responses";
   apiKey?: string;
   baseURL?: string;
   headers?: Record<string, string>;
@@ -355,7 +357,7 @@ export function mapOpenAIError(err: unknown): ProviderError {
     const code = (err.code ?? body?.code ?? "") as string;
     const o = { status, retryAfterMs: parseRetryAfter(err.headers as Headers | undefined), cause: err };
     if (code === "context_length_exceeded" || looksLikeContextOverflow(msg)) return new ProviderError("context_overflow", msg, o);
-    if (status === 429) {
+    if (status === 429 || code === "rate_limit_exceeded") {
       if (code === "insufficient_quota") return new ProviderError("permission", `Quota exceeded: ${msg}`, { status });
       return new ProviderError("rate_limit", `Rate limited: ${msg}`, o);
     }

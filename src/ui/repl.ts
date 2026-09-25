@@ -1,4 +1,5 @@
-import { appendFileSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { appendFileSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -8,12 +9,13 @@ import { type CommandInfo, expandCommand } from "../commands/commands.ts";
 import { paths } from "../config/paths.ts";
 import { authStore, stateStore, trustStore } from "../config/store.ts";
 import type { AgentEvent } from "../core/events.ts";
-import { EFFORT_LEVELS, type Effort, textOf } from "../core/types.ts";
+import { EFFORT_LEVELS, type Effort, type FileChange, textOf } from "../core/types.ts";
 import type { Mode, PermissionRequest } from "../permission/permission.ts";
 import { catalogModels } from "../provider/catalog.ts";
 import { PRESETS, checkCredentials, parseModelRef } from "../provider/registry.ts";
 import { Runtime } from "../runtime.ts";
 import { exportMarkdown } from "../session/export.ts";
+import { exportHtml } from "../session/html.ts";
 import type { Session } from "../session/session.ts";
 import { toolTitle } from "../tool/registry.ts";
 import { listFiles } from "../tool/search.ts";
@@ -28,7 +30,7 @@ import { type Key, KeyParser } from "./keys.ts";
 import { renderMarkdown } from "./markdown.ts";
 import { type Modal, type SelectOption, SelectPrompt, TextPrompt } from "./prompts.ts";
 import { Screen } from "./screen.ts";
-import { ConversationView, renderChanges, renderDiff, renderTodos } from "./view.ts";
+import { ConversationView, renderDiff, renderTodos } from "./view.ts";
 
 export interface ReplOptions {
   cwd: string;
@@ -748,6 +750,86 @@ export async function runRepl(opts: ReplOptions): Promise<number> {
     redraw();
   };
 
+  /** "reverted a.ts, b.ts and 3 more" */
+  const reverted = (changes: FileChange[]) => {
+    if (!changes.length) return "";
+    const names = changes.map((ch) => ch.path);
+    return ` · reverted ${names.slice(0, 3).join(", ")}${names.length > 3 ? ` and ${names.length - 3} more` : ""}`;
+  };
+
+  const ago = (ms: number) => {
+    const m = Math.round(ms / 60_000);
+    if (m < 1) return "just now";
+    if (m < 60) return `${m}m ago`;
+    const h = Math.round(m / 60);
+    return h < 48 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
+  };
+
+  /** Pick an earlier prompt and go back to just before it (Esc Esc on an empty prompt). */
+  const openRewind = () => {
+    if (!session) return print(c.gray("  Nothing to rewind."));
+    if (busy) return flashHint("wait for the current turn to finish");
+    const points = rt.engine.rewindPoints(session);
+    if (!points.length) return print(c.gray("  Nothing to rewind."));
+    const now = Date.now();
+    openModal(
+      () =>
+        new SelectPrompt({
+          title: "Rewind to before…",
+          body: [c.gray("Pick a prompt to go back to. /redo brings everything back.")],
+          options: [...points].reverse().map((p) => ({
+            label: truncateEnd(oneLine(p.text) || "(empty prompt)", Math.max(20, screen.width - 34)),
+            hint: `${ago(now - p.time)}${p.hasSnapshot ? "" : " · no file snapshot"}`,
+            value: p.id,
+          })),
+          filterable: true,
+          onDone: (id) => {
+            closeModal();
+            const point = points.find((p) => p.id === id);
+            if (!point) return;
+            openModal(
+              () =>
+                new SelectPrompt({
+                  title: "Rewind",
+                  body: [`Before: ${c.bold(truncateEnd(oneLine(point.text), 80))}`],
+                  options: [
+                    ...(point.hasSnapshot ? [{ label: "Restore code and conversation", value: "both" }] : []),
+                    { label: "Conversation only", hint: "keep the files as they are", value: "conversation" },
+                    ...(point.hasSnapshot ? [{ label: "Code only", hint: "keep the conversation", value: "code" }] : []),
+                    { label: "Cancel", value: "" },
+                  ],
+                  cancelValue: "",
+                  onDone: (how) => {
+                    closeModal();
+                    if (how) void doRewind(point.id, how);
+                  },
+                }),
+            );
+          },
+        }),
+    );
+  };
+
+  const doRewind = async (id: string, how: string) => {
+    if (!session) return;
+    try {
+      const r = await rt.engine.rewind(session, id, { code: how !== "conversation", conversation: how !== "code" });
+      const what = how === "both" ? "code and conversation" : how;
+      print(c.gray(`  ↶ Rewound ${what} to before "${truncateEnd(oneLine(r.prompt), 60)}"${reverted(r.restored)}`));
+      if (how === "code") {
+        rt.engine.remind(session.id, `<system-reminder>The user restored the files to their state before the prompt "${truncateEnd(oneLine(r.prompt), 200)}". Changes you made after that point were reverted; read files again before editing them.</system-reminder>`);
+      } else {
+        if (how === "conversation") {
+          rt.engine.remind(session.id, "<system-reminder>The user rewound the conversation but kept the files: they may contain changes from the removed part. Read files again before editing them.</system-reminder>");
+        }
+        editor.setValue(r.prompt);
+      }
+    } catch (err) {
+      print(c.red(`✗ ${(err as Error).message}`));
+    }
+    redraw();
+  };
+
   const customCommands = (): CommandInfo[] => rt.commands;
 
   const builtins: SlashCommand[] = [
@@ -768,6 +850,8 @@ export async function runRepl(opts: ReplOptions): Promise<number> {
           ["esc", "interrupt the agent · close menus"],
           ["ctrl+c", "clear input · twice to exit"],
           ["ctrl+o", "toggle verbose output (thinking, full tool output)"],
+          ["ctrl+g", "write the prompt in $VISUAL / $EDITOR"],
+          ["esc esc", "clear the input · on an empty prompt: rewind"],
           ["ctrl+l", "redraw the screen"],
           ["↑ ↓", "history"],
           ["@path", "attach a file, image or directory (@file:10-20 for lines)"],
@@ -912,7 +996,7 @@ export async function runRepl(opts: ReplOptions): Promise<number> {
         try {
           const r = await rt.engine.undo(session);
           if (!r) return print(c.gray("  Nothing to undo."));
-          print(c.gray(`  ↶ Undid "${truncateEnd(oneLine(r.prompt), 60)}"${r.restored.length ? ` · restored ${renderChanges(r.restored)}` : ""}`));
+          print(c.gray(`  ↶ Undid "${truncateEnd(oneLine(r.prompt), 60)}"${reverted(r.restored)}`));
           editor.setValue(r.prompt);
         } catch (err) {
           print(c.red(`✗ ${(err as Error).message}`));
@@ -920,13 +1004,19 @@ export async function runRepl(opts: ReplOptions): Promise<number> {
       },
     },
     {
+      name: "rewind",
+      description: "Go back to an earlier prompt (code and/or conversation)",
+      run: () => openRewind(),
+    },
+    {
       name: "redo",
-      description: "Redo the last undone turn",
+      description: "Redo the last undone turn or rewind",
       run: async () => {
         if (!session) return;
         const r = await rt.engine.redo(session);
-        print(r ? c.gray(`  ↷ Redid "${truncateEnd(oneLine(r.prompt), 60)}"`) : c.gray("  Nothing to redo."));
-        if (r) editor.clear();
+        if (!r) return print(c.gray("  Nothing to redo."));
+        print(c.gray(r.prompt ? `  ↷ Redid "${truncateEnd(oneLine(r.prompt), 60)}"` : "  ↷ Restored the file changes"));
+        editor.clear();
       },
     },
     {
@@ -993,12 +1083,14 @@ export async function runRepl(opts: ReplOptions): Promise<number> {
     },
     {
       name: "export",
-      args: "[file]",
-      description: "Export the session as Markdown",
+      args: "[file.md|file.html|html]",
+      description: "Export the session as Markdown or a self-contained HTML page",
       run: async (a) => {
         if (!session) return print(c.gray("  Nothing to export."));
-        const file = path.resolve(rt.cwd, a.trim() || `usta-${session.id}.md`);
-        await fs.writeFile(file, exportMarkdown(session));
+        const arg = a.trim();
+        const file = path.resolve(rt.cwd, arg === "html" ? `usta-${session.id}.html` : arg || `usta-${session.id}.md`);
+        const html = /\.html?$/i.test(file);
+        await fs.writeFile(file, html ? exportHtml(session) : exportMarkdown(session));
         print(c.gray(`  Exported to ${displayPath(file, rt.cwd)}`));
       },
     },
@@ -1184,10 +1276,45 @@ export async function runRepl(opts: ReplOptions): Promise<number> {
     process.kill(process.pid, "SIGTSTP");
   };
 
+  /** Compose the prompt in $VISUAL / $EDITOR (Ctrl+G). */
+  const openExternalEditor = () => {
+    const editorCmd = process.env.VISUAL || process.env.EDITOR || (process.platform === "win32" ? "notepad" : "vi");
+    const file = path.join(os.tmpdir(), `usta-prompt-${process.pid}-${Date.now()}.md`);
+    try {
+      writeFileSync(file, editor.expanded(), { mode: 0o600 });
+    } catch (err) {
+      flashHint(`could not open the editor: ${(err as Error).message}`);
+      return;
+    }
+    screen.clearLive();
+    disableInput();
+    stdout.write("\x1b[?25h");
+    // Through the shell so values like "code --wait" work.
+    const res =
+      process.platform === "win32"
+        ? spawnSync(editorCmd, [file], { stdio: "inherit", shell: true })
+        : spawnSync("/bin/sh", ["-c", `${editorCmd} "$1"`, "sh", file], { stdio: "inherit" });
+    let text: string | undefined;
+    try {
+      text = readFileSync(file, "utf8");
+      unlinkSync(file);
+    } catch {
+      // editor removed the file
+    }
+    enableInput();
+    if (res.error || (res.status !== 0 && res.status !== null)) flashHint(`${editorCmd} exited with ${res.error?.message ?? `code ${res.status}`}`);
+    if (text !== undefined) editor.setValue(text.replace(/\s+$/, ""));
+    redraw();
+  };
+
   onKeyRef.fn = (k: Key) => {
     if (modal) {
       modal.handleKey(k);
       redraw();
+      return;
+    }
+    if (k.ctrl && k.name === "g") {
+      openExternalEditor();
       return;
     }
     if (k.ctrl && k.name === "c") {
@@ -1236,7 +1363,12 @@ export async function runRepl(opts: ReplOptions): Promise<number> {
         rt.denyPending();
         return;
       }
-      if (editor.value && Date.now() - lastEsc < 600) editor.clear();
+      if (Date.now() - lastEsc < 600) {
+        lastEsc = 0;
+        if (editor.value) editor.clear();
+        else openRewind();
+        return;
+      }
       lastEsc = Date.now();
       return;
     }

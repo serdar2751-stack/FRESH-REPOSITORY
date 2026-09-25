@@ -107,6 +107,44 @@ describe("engine", () => {
     assert.equal(s.messages.length, 4);
   });
 
+  it("rewinds to an earlier prompt: code, conversation or both, with redo", async () => {
+    const dir = await project({ git: true });
+    const { rt } = await runtime(dir, { yolo: true });
+    const s = await rt.newSession();
+    for (const [i, name] of ["one", "two", "three"].entries()) {
+      mock.push({ blocks: [{ type: "tool_use", name: "write", input: { file_path: `${name}.txt`, content: `${i}\n` } }] }, { blocks: [{ type: "text", text: `wrote ${name}` }] });
+      await rt.engine.prompt(s, { text: `write ${name}` }, { signal: signal() });
+    }
+    const points = rt.engine.rewindPoints(s);
+    assert.deepEqual(points.map((p) => p.text), ["write one", "write two", "write three"]);
+    assert.ok(points.every((p) => p.hasSnapshot));
+    const exists = async (f: string) => fs.access(path.join(dir, f)).then(() => true, () => false);
+
+    // Code only: files go back, the conversation stays.
+    const before = s.messages.length;
+    const code = await rt.engine.rewind(s, points[1]!.id, { conversation: false });
+    assert.equal(code.prompt, "write two");
+    assert.equal(s.messages.length, before);
+    assert.deepEqual([await exists("one.txt"), await exists("two.txt"), await exists("three.txt")], [true, false, false]);
+    await rt.engine.redo(s);
+    assert.deepEqual([await exists("two.txt"), await exists("three.txt")], [true, true]);
+
+    // Both: back to before "write two"; redo restores everything.
+    await rt.engine.rewind(s, points[1]!.id);
+    assert.deepEqual(rt.engine.rewindPoints(s).map((p) => p.text), ["write one"]);
+    assert.deepEqual([await exists("one.txt"), await exists("two.txt")], [true, false]);
+    const redo = await rt.engine.redo(s);
+    assert.equal(redo?.prompt, "write two");
+    assert.equal(s.messages.length, before);
+    assert.equal(await exists("three.txt"), true);
+
+    // Conversation only: the files stay as they are.
+    await rt.engine.rewind(s, points[2]!.id, { code: false });
+    assert.deepEqual(rt.engine.rewindPoints(s).map((p) => p.text), ["write one", "write two"]);
+    assert.equal(await exists("three.txt"), true);
+    await assert.rejects(rt.engine.rewind(s, "msg_missing"), /Not a prompt/);
+  });
+
   it("runs read-only tools in parallel and returns results in order", async () => {
     const dir = await project();
     await fs.writeFile(path.join(dir, "a.txt"), "AAA\n");

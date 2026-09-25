@@ -10,6 +10,7 @@ import { catalogModels } from "./provider/catalog.ts";
 import { PRESETS, ProviderRegistry, checkCredentials } from "./provider/registry.ts";
 import { Runtime } from "./runtime.ts";
 import { exportMarkdown } from "./session/export.ts";
+import { exportHtml } from "./session/html.ts";
 import { c, setColor } from "./ui/ansi.ts";
 import { formatCost, formatTokens } from "./util/text.ts";
 import { VERSION } from "./version.ts";
@@ -83,7 +84,7 @@ ${c.bold("Usage")}
   usta [prompt]                 interactive session (optionally start with a prompt)
   usta run "prompt"             run once without the UI (scripts, CI, pipes)
   usta serve                    HTTP + SSE API with a built-in web UI
-  usta sessions [list|show|export|delete] [id]
+  usta sessions [list|show|export|delete] [id] [file.md|file.html]   (--html for HTML on stdout)
   usta models [provider]        list models (use --remote to query the provider)
   usta auth login|logout|list [provider]
   usta config [paths]           show merged config and where it comes from
@@ -152,12 +153,13 @@ async function sessionsCommand(p: Parsed, cwd: string): Promise<number> {
     if (!id) throw new Error(`usage: usta sessions ${sub} <id>`);
     if (sub === "show" || sub === "export") {
       const s = await rt.loadSession(id);
-      const md = exportMarkdown(s, { tools: !bool(p, "no-tools") });
       const file = p.positional[2];
+      const html = bool(p, "html") || Boolean(file && /\.html?$/i.test(file));
+      const out = html ? exportHtml(s, { tools: !bool(p, "no-tools") }) : exportMarkdown(s, { tools: !bool(p, "no-tools") });
       if (file) {
-        await fs.writeFile(file, md);
+        await fs.writeFile(file, out);
         console.log(`Wrote ${file}`);
-      } else process.stdout.write(md);
+      } else process.stdout.write(out);
       return 0;
     }
     if (sub === "delete") {

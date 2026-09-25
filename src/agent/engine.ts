@@ -1070,17 +1070,42 @@ export class Engine {
     const idx = session.messages.findLastIndex((m) => m.role === "user" && m.origin === "prompt");
     if (idx < 0) return undefined;
     if (idx < session.meta.contextStart) throw new Error("Cannot undo past a compaction.");
-    const prompt = session.messages[idx] as UserMessage;
+    return this.rewind(session, session.messages[idx]!.id);
+  }
+
+  /** Prompts the session can be rewound to, oldest first (only after the last compaction). */
+  rewindPoints(session: Session): Array<{ id: string; text: string; time: number; hasSnapshot: boolean }> {
+    return session.messages
+      .slice(session.meta.contextStart)
+      .filter((m): m is UserMessage => m.role === "user" && m.origin === "prompt")
+      .map((m) => ({ id: m.id, text: textOf(m.parts), time: m.time, hasSnapshot: Boolean(m.snapshot) }));
+  }
+
+  /**
+   * Go back to just before the prompt `messageId`: restore the files to their
+   * state at that point and/or drop the conversation from there on. Redo
+   * reverses it.
+   */
+  async rewind(session: Session, messageId: string, opts: { code?: boolean; conversation?: boolean } = {}): Promise<{ prompt: string; restored: FileChange[] }> {
+    const code = opts.code !== false;
+    const conversation = opts.conversation !== false;
+    const idx = session.messages.findIndex((m) => m.id === messageId);
+    const prompt = session.messages[idx];
+    if (idx < 0 || prompt?.role !== "user" || prompt.origin !== "prompt") throw new Error("Not a prompt of this session.");
+    if (idx < session.meta.contextStart) throw new Error("Cannot rewind past a compaction.");
     let redoSnapshot: string | undefined;
     let restored: FileChange[] = [];
-    if (prompt.snapshot) {
+    if (code && prompt.snapshot) {
       redoSnapshot = await this.opts.snapshotter.track();
       restored = await this.opts.snapshotter.restore(prompt.snapshot);
     }
-    const removed = session.messages.slice(idx);
-    await session.truncate(idx);
-    session.redo.push({ messages: removed, snapshot: redoSnapshot });
-    this.trackers.delete(session.id);
+    let removed: Message[] = [];
+    if (conversation) {
+      removed = session.messages.slice(idx);
+      await session.truncate(idx);
+      this.trackers.delete(session.id);
+    }
+    if (removed.length || redoSnapshot) session.redo.push({ messages: removed, snapshot: redoSnapshot });
     return { prompt: textOf(prompt.parts), restored };
   }
 

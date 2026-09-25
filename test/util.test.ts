@@ -198,3 +198,19 @@ describe("text helpers", () => {
     assert.deepEqual(wrapText("hello world foo", 11), ["hello world", "foo"]);
   });
 });
+
+describe("html export", () => {
+  it("renders Markdown safely and builds a script-free page", async () => {
+    const { markdownToHtml } = await import("../src/session/html.ts");
+    const html = markdownToHtml(
+      "## Plan\n\n- **bold** and `code`\n- [docs](https://x.dev/a?b=1&c=2)\n\n```ts\nconst a = '<b>';\n```\n\n| a | b |\n|---|---|\n| <i>1</i> | 2 |\n\n<script>alert(1)</script> [js](javascript:alert(1))",
+    );
+    assert.match(html, /<h4>Plan<\/h4>/);
+    assert.match(html, /<li><strong>bold<\/strong> and <code>code<\/code><\/li>/);
+    assert.match(html, /<a href="https:\/\/x\.dev\/a\?b=1&amp;c=2" rel="noopener noreferrer">docs<\/a>/);
+    assert.match(html, /<pre><code data-lang="ts">const a = &#39;&lt;b&gt;&#39;;<\/code><\/pre>/);
+    assert.match(html, /<td>&lt;i&gt;1&lt;\/i&gt;<\/td>/);
+    assert.doesNotMatch(html, /<script>|href="javascript/);
+    assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  });
+});

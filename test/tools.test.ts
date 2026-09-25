@@ -303,3 +303,57 @@ describe("webfetch", () => {
     }
   });
 });
+
+describe("websearch", () => {
+  it("queries the configured backend and formats results", async () => {
+    const http = await import("node:http");
+    const { websearchTool, SEARCH_ENDPOINTS, searchBackend } = await import("../src/tool/websearch.ts");
+    const seen: Array<{ url: string; headers: Record<string, unknown>; body: string }> = [];
+    const srv = http.createServer(async (req, res) => {
+      let body = "";
+      for await (const c of req) body += c;
+      seen.push({ url: req.url ?? "", headers: req.headers, body });
+      res.writeHead(200, { "content-type": "application/json" });
+      if (req.url?.startsWith("/brave")) res.end(JSON.stringify({ web: { results: [{ title: "Node <b>docs</b>", url: "https://nodejs.org/api", description: "The <strong>API</strong> reference" }] } }));
+      else res.end(JSON.stringify({ results: [{ title: "Tavily hit", url: "https://example.com/a", content: "snippet text" }] }));
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+    const base = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
+    const saved = { ...SEARCH_ENDPOINTS };
+    SEARCH_ENDPOINTS.tavily = `${base}/tavily`;
+    SEARCH_ENDPOINTS.brave = `${base}/brave`;
+    try {
+      const ctx = makeContext(await tempDir(), { config: { search: { provider: "tavily", apiKey: "tv-key" } } });
+      const r = await websearchTool.execute({ query: "node streams", limit: 3, site: "https://nodejs.org/docs" }, ctx);
+      assert.match(r.output, /^1\. Tavily hit\n {3}https:\/\/example\.com\/a\n {3}snippet text$/);
+      assert.equal(seen[0]!.headers.authorization, "Bearer tv-key");
+      assert.deepEqual(JSON.parse(seen[0]!.body), { query: "node streams site:nodejs.org", max_results: 3, search_depth: "basic" });
+      assert.equal(ctx.permits[0]!.permission, "websearch");
+
+      const ctx2 = makeContext(await tempDir(), { config: { search: { provider: "brave", apiKey: "br-key" } } });
+      const b = await websearchTool.execute({ query: "fs.promises" }, ctx2);
+      assert.match(b.output, /1\. Node docs\n {3}https:\/\/nodejs\.org\/api\n {3}The API reference/);
+      assert.equal(seen[1]!.headers["x-subscription-token"], "br-key");
+      assert.match(seen[1]!.url, /q=fs\.promises&count=5/);
+
+      assert.equal(searchBackend({}).backend === "duckduckgo" || Boolean(process.env.TAVILY_API_KEY || process.env.BRAVE_API_KEY || process.env.EXA_API_KEY), true);
+      await assert.rejects(websearchTool.execute({ query: "x" }, makeContext(await tempDir(), { config: { search: { provider: "exa" } } })), /No API key|Search failed/);
+    } finally {
+      Object.assign(SEARCH_ENDPOINTS, saved);
+      srv.close();
+    }
+  });
+
+  it("parses DuckDuckGo HTML results", async () => {
+    const { parseDuckDuckGo } = await import("../src/tool/websearch.ts");
+    const html = `<div class="result results_links web-result"><div class="links_main">
+      <h2 class="result__title"><a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fdocs.python.org%2F3%2Flibrary%2Fasyncio.html&amp;rut=abc">asyncio &mdash; Asynchronous I/O</a></h2>
+      <a class="result__snippet" href="x">asyncio is a library to write <b>concurrent</b> code.</a></div></div>
+      <div class="result result--ad"><a class="result__a" href="https://duckduckgo.com/y.js?ad=1">Ad</a></div>
+      <div class="result results_links"><a class="result__a" href="https://example.org/b">Second</a><div class="result__snippet">Two</div></div>`;
+    assert.deepEqual(parseDuckDuckGo(html, 5), [
+      { title: "asyncio — Asynchronous I/O", url: "https://docs.python.org/3/library/asyncio.html", snippet: "asyncio is a library to write concurrent code." },
+      { title: "Second", url: "https://example.org/b", snippet: "Two" },
+    ]);
+  });
+});

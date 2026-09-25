@@ -9,6 +9,7 @@ import { readTool } from "./read.ts";
 import { globTool, grepTool, lsTool } from "./search.ts";
 import { createTaskTool } from "./task.ts";
 import type { Tool } from "./types.ts";
+import { websearchTool } from "./websearch.ts";
 import { writeTool } from "./write.ts";
 
 export interface ToolSetOptions {
@@ -30,7 +31,7 @@ export function buildToolSet(opts: ToolSetOptions): AnyTool[] {
   const tools: AnyTool[] = [readTool];
   if (editFamily === "patch") tools.push(applyPatchTool);
   else tools.push(editTool, writeTool);
-  tools.push(bashTool, bashOutputTool, bashKillTool, globTool, grepTool, lsTool, webfetchTool, todoTool, questionTool);
+  tools.push(bashTool, bashOutputTool, bashKillTool, globTool, grepTool, lsTool, webfetchTool, websearchTool, todoTool, questionTool);
   if (!opts.isSubagent) tools.push(exitPlanModeTool);
   if (opts.hasSkills) tools.push(skillTool);
   if (!opts.isSubagent && opts.subagents.length) tools.push(createTaskTool(opts.subagents));
@@ -64,7 +65,7 @@ function matchesAllow(allow: Set<string>, name: string): boolean {
   return false;
 }
 
-const TITLE_TOOLS: AnyTool[] = [readTool, editTool, writeTool, applyPatchTool, bashTool, bashOutputTool, bashKillTool, globTool, grepTool, lsTool, webfetchTool, todoTool, questionTool, exitPlanModeTool, skillTool];
+const TITLE_TOOLS: AnyTool[] = [readTool, editTool, writeTool, applyPatchTool, bashTool, bashOutputTool, bashKillTool, globTool, grepTool, lsTool, webfetchTool, websearchTool, todoTool, questionTool, exitPlanModeTool, skillTool];
 
 /** Display title for a recorded tool call (history replay, exports). */
 export function toolTitle(name: string, input: unknown, cwd: string): string {

@@ -120,6 +120,8 @@ export interface Config {
   notify?: boolean;
   /** Language servers that report errors after edits. */
   lsp?: LspConfig;
+  /** Web search backend for the websearch tool (default: first API key found, else DuckDuckGo). */
+  search?: { provider?: "tavily" | "brave" | "exa" | "duckduckgo"; apiKey?: string };
 }
 
 /** Keys an untrusted project config may not set: they run code or redirect credentials. */

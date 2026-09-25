@@ -274,7 +274,7 @@ TypeScript ve Rust sunucuları proje kodu çalıştırabildiği için (tsserver 
 - `/undo` son turu geri alır (dosyalar + konuşma) ve isteminizi düzenlemeniz için girdi kutusuna geri koyar. `/rewind` daha eski bir isteme döner; kod ve konuşmayı birlikte ya da ayrı ayrı geri alabilirsiniz. `/diff` son turun, `/diff all` oturumun değişikliklerini gösterir.
 - **Araç çıktısı budama:** bağlam modele göre 40-120 bin token'ı aşınca, en yeni ~40 bin token'lık çıktı dışındaki eski araç çıktıları "temizlendi, gerekirse aracı tekrar çalıştır" notuyla değiştirilir. Kullanıcı cevapları, plan onayları, alt ajan raporları ve skill talimatları korunur. Budama en az 20 bin token'lık toplu adımlarla yapılır ki prompt önbelleği arada sıcak kalsın. Orijinaller oturum dosyasında durur (arayüz ve dışa aktarma bunları gösterir). Kapatmak için: `"compaction": { "prune": false }`.
 - Bağlam penceresi dolmaya yaklaşınca konuşma, işin durumunu koruyan ayrıntılı bir özetle değiştirilir. `/compact [talimat]` ile elle tetiklenebilir; `compaction.maxContextTokens` maliyeti sınırlamak için kullanılabilir.
-- `/export oturum.html` (veya `usta sessions export <id> oturum.html`) paylaşılabilir, betik içermeyen bir HTML sayfası, `.md` uzantısı ise Markdown dökümü üretir.
+- `/export oturum.html` (veya `usta sessions export <id> oturum.html`, web arayüzünde **Export** düğmesi, API'de `GET /api/sessions/:id/export?format=html|md`) paylaşılabilir, betik içermeyen bir HTML sayfası, `.md` uzantısı ise Markdown dökümü üretir.
 
 ## Claude'a özel davranışlar
 

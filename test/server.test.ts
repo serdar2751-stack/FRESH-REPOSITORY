@@ -147,6 +147,31 @@ describe("server", () => {
     await fs.access(path.join(dir, "from-api.txt"));
   });
 
+  it("exports a session as HTML or Markdown", async () => {
+    const created = await request("POST", "/api/sessions", {});
+    const id = created.json.session.id as string;
+    await request("POST", `/api/sessions/${id}/prompt`, { text: "export me <b>now</b>", wait: true });
+    const get = (q: string) =>
+      new Promise<{ status: number; type: string; body: string }>((resolve, reject) => {
+        http
+          .get(new URL(`/api/sessions/${id}/export${q}`, srv.url), { headers: { authorization: `Bearer ${srv.token}` } }, (res) => {
+            let d = "";
+            res.on("data", (c) => (d += c));
+            res.on("end", () => resolve({ status: res.statusCode ?? 0, type: String(res.headers["content-type"]), body: d }));
+          })
+          .on("error", reject);
+      });
+    const html = await get("?format=html");
+    assert.equal(html.status, 200);
+    assert.match(html.type, /text\/html/);
+    assert.match(html.body, /^<!doctype html>/);
+    assert.match(html.body, /export me &lt;b&gt;now&lt;\/b&gt;/);
+    assert.doesNotMatch(html.body, /<script/i);
+    const md = await get("?format=md");
+    assert.match(md.type, /text\/markdown/);
+    assert.match(md.body, /## User\n\nexport me <b>now<\/b>/);
+  });
+
   it("rejects bad input", async () => {
     const bad = await request("POST", "/api/sessions/ses_nope/prompt", { text: "x" });
     assert.equal(bad.status, 404);

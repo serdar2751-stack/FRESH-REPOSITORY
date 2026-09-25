@@ -8,6 +8,8 @@ import type { Mode, PermissionDecision } from "../permission/permission.ts";
 import { catalogModels } from "../provider/catalog.ts";
 import { PRESETS, parseModelRef } from "../provider/registry.ts";
 import { Runtime } from "../runtime.ts";
+import { exportMarkdown } from "../session/export.ts";
+import { exportHtml } from "../session/html.ts";
 import type { Session } from "../session/session.ts";
 import { randomToken } from "../util/ids.ts";
 import { VERSION } from "../version.ts";
@@ -269,6 +271,18 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
         return send(res, 200, { meta: { ...s.meta, system: undefined } });
       }
       throw new HttpError(405, "method not allowed");
+    }
+    if (action === "export" && method === "GET") {
+      const md = url.searchParams.get("format") === "md";
+      res.writeHead(200, {
+        "content-type": md ? "text/markdown; charset=utf-8" : "text/html; charset=utf-8",
+        "content-disposition": `attachment; filename="usta-${s.id}.${md ? "md" : "html"}"`,
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+        "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+      });
+      res.end(md ? exportMarkdown(s) : exportHtml(s));
+      return;
     }
     if (method !== "POST") throw new HttpError(405, "method not allowed");
     switch (action) {

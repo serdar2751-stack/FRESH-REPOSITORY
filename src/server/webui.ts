@@ -111,6 +111,7 @@ textarea:focus { border-color: var(--accent); }
     </select>
     <input id="model" list="models" placeholder="provider/model" title="Model">
     <datalist id="models"></datalist>
+    <button id="export" title="Download this session as a self-contained HTML page">Export</button>
   </div>
   <div id="log"><div class="inner" id="inner"></div></div>
   <div class="composer">
@@ -422,6 +423,18 @@ textarea:focus { border-color: var(--accent); }
   $("input").addEventListener("keydown", (ev) => { if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); } });
   $("send").onclick = send;
   $("stop").onclick = () => state.session && api("POST", "/sessions/" + state.session + "/abort", {});
+  $("export").onclick = async () => {
+    if (!state.session) return notice("error", "Start or open a session first.");
+    const res = await fetch("/api/sessions/" + state.session + "/export?format=html", { headers: token ? { authorization: "Bearer " + token } : {} });
+    if (!res.ok) return notice("error", "Export failed: " + res.statusText);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(await res.blob());
+    a.download = "usta-" + state.session + ".html";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  };
   $("new").onclick = () => newSession().catch((err) => notice("error", err.message));
   $("mode").onchange = () => state.session && api("PATCH", "/sessions/" + state.session, { mode: $("mode").value });
   $("model").onchange = () => state.session && api("PATCH", "/sessions/" + state.session, { model: $("model").value }).catch((err) => notice("error", err.message));

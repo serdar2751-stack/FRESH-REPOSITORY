@@ -285,3 +285,43 @@ describe("permission manager", () => {
     assert.equal(maxActive, 1);
   });
 });
+
+describe("differential check against bash", () => {
+  it("never judges a command read-only when bash would run rm", { skip: process.platform === "win32" }, async () => {
+    const { execFileSync } = await import("node:child_process");
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const pieces = ["ls", "rm -rf x", "$(", ")", "$((", "))", "$(( $(", "`", "'", '"', "<<", "EOF", "\n", "\\", "&&", "|", ";", "(", "{", "}", "$'", "timeout 5", "env", "bash -c", "find . -exec", "\;", "xargs", "<<<", ">", "2>&1", "#", "cat", "echo", "-c", "$", "<<EOF\n$(rm -rf x)\nEOF\n", '<<E"OF"\n', "EOF\n", "$((rm -rf x) )", "`rm -rf x`", "PATH=.", "sh -c '"];
+    let seed = 20260925;
+    const rand = (n: number) => {
+      seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+      return (seed >>> 16) % n;
+    };
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "usta-diff-"));
+    const bin = path.join(dir, "bin");
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, "rm"), `#!/bin/sh\ntouch "${dir}/RM_RAN"\n`, { mode: 0o755 });
+    const ran: string[] = [];
+    let checked = 0;
+    try {
+      for (let i = 0; i < 60_000 && checked < 60; i++) {
+        let s = "";
+        for (let j = 0, n = 1 + rand(10); j < n; j++) s += pieces[rand(pieces.length)] + (rand(3) ? " " : "");
+        if (!s.includes("rm") || !isReadOnlyCommandLine(s)) continue;
+        checked++;
+        fs.rmSync(path.join(dir, "RM_RAN"), { force: true });
+        try {
+          execFileSync("/bin/bash", ["-c", s], { cwd: dir, env: { PATH: `${bin}:/usr/bin:/bin`, HOME: dir }, timeout: 2000, stdio: "ignore" });
+        } catch {
+          // syntax errors and failing commands are fine
+        }
+        if (fs.existsSync(path.join(dir, "RM_RAN"))) ran.push(s);
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    assert.ok(checked > 10, `only ${checked} candidates`);
+    assert.deepEqual(ran, []);
+  });
+});

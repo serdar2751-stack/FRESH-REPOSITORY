@@ -84,14 +84,24 @@ after(async () => {
 
 describe("server", () => {
   it("serves the web UI and protects the API", async () => {
-    const page = await new Promise<string>((resolve) => http.get(srv.url + "/", (res) => {
-      let d = "";
-      res.on("data", (c) => (d += c));
-      res.on("end", () => resolve(d));
-    }));
+    const { page, csp } = await new Promise<{ page: string; csp: string }>((resolve) =>
+      http.get(srv.url + "/", (res) => {
+        let d = "";
+        res.on("data", (c) => (d += c));
+        res.on("end", () => resolve({ page: d, csp: String(res.headers["content-security-policy"]) }));
+      }),
+    );
     assert.match(page, /<title>usta<\/title>/);
+    // Only the page's own script (carrying this response's nonce) may run.
+    const nonce = /script-src 'nonce-([^']+)'/.exec(csp)?.[1];
+    assert.ok(nonce && page.includes(`<script nonce="${nonce}">`));
+    assert.doesNotMatch(csp, /script-src[^;]*unsafe-inline/);
     const noAuth = await request("GET", "/api/sessions", undefined, { authorization: "Bearer wrong" });
     assert.equal(noAuth.status, 401);
+    const shortToken = await request("GET", "/api/sessions", undefined, { authorization: "Bearer x" });
+    assert.equal(shortToken.status, 401);
+    const nullOrigin = await request("GET", "/api/health", undefined, { origin: "null" });
+    assert.equal(nullOrigin.status, 403);
     const badHost = await request("GET", "/api/health", undefined, { host: "evil.example.com" });
     assert.equal(badHost.status, 403);
     const health = await request("GET", "/api/health");

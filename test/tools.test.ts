@@ -250,3 +250,43 @@ describe("search tools", () => {
     assert.doesNotMatch(r.output, /node_modules\/|dist\/|debug\.log/);
   });
 });
+
+describe("webfetch", () => {
+  it("asks again before following a redirect to another origin", async () => {
+    const http = await import("node:http");
+    const target = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("secret internal data");
+    });
+    await new Promise<void>((r) => target.listen(0, "127.0.0.1", r));
+    const targetUrl = `http://127.0.0.1:${(target.address() as { port: number }).port}/meta`;
+    const hops = http.createServer((req, res) => {
+      if (req.url === "/same") res.writeHead(302, { location: "/final" }).end();
+      else if (req.url === "/final") res.writeHead(200, { "content-type": "text/plain" }).end("same-origin page");
+      else res.writeHead(302, { location: targetUrl }).end();
+    });
+    await new Promise<void>((r) => hops.listen(0, "127.0.0.1", r));
+    const base = `http://localhost:${(hops.address() as { port: number }).port}`;
+    const { webfetchTool } = await import("../src/tool/misc.ts");
+    try {
+      // Same-origin redirects need no new approval.
+      const ctx1 = makeContext(await tempDir());
+      const same = await webfetchTool.execute({ url: `${base}/same` }, ctx1);
+      assert.match(same.output, /redirected to .*\/final/);
+      assert.match(same.output, /same-origin page/);
+      assert.equal(ctx1.permits.length, 1);
+      // A cross-origin hop is checked separately and can be refused.
+      const ctx2 = makeContext(await tempDir(), {});
+      ctx2.deny = (req) => req.patterns[0] === targetUrl;
+      await assert.rejects(webfetchTool.execute({ url: `${base}/go` }, ctx2), /denied/);
+      assert.deepEqual(
+        ctx2.permits.map((p) => p.patterns[0]),
+        [`${base}/go`, targetUrl],
+      );
+      assert.match(ctx2.permits[1]!.title, /Follow redirect/);
+    } finally {
+      hops.close();
+      target.close();
+    }
+  });
+});

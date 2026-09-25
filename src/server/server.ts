@@ -1,3 +1,4 @@
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { expandMentions } from "../agent/mentions.ts";
@@ -53,6 +54,13 @@ async function readBody(req: http.IncomingMessage): Promise<Record<string, unkno
   } catch (err) {
     throw new HttpError(400, `invalid JSON: ${(err as Error).message}`);
   }
+}
+
+/** Constant-time string comparison (tokens). */
+function safeEqual(a: string, b: string): boolean {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
 }
 
 function send(res: http.ServerResponse, status: number, body: unknown): void {
@@ -115,8 +123,9 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
   const authorized = (req: http.IncomingMessage, url: URL): boolean => {
     if (!token) return true;
     const header = req.headers.authorization;
-    if (header === `Bearer ${token}`) return true;
-    return url.searchParams.get("token") === token;
+    if (header?.startsWith("Bearer ") && safeEqual(header.slice(7), token)) return true;
+    const q = url.searchParams.get("token");
+    return q !== null && safeEqual(q, token);
   };
 
   const handler = async (req: http.IncomingMessage, res: http.ServerResponse) => {
@@ -127,18 +136,27 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
       if (!LOOPBACK.has(host)) throw new HttpError(403, "forbidden host");
     }
     const origin = req.headers.origin;
-    if (origin) {
-      const o = new URL(origin);
-      if (loopbackBind && !LOOPBACK.has(o.hostname)) throw new HttpError(403, "forbidden origin");
+    if (origin && loopbackBind) {
+      let hostname = "";
+      try {
+        hostname = new URL(origin).hostname;
+      } catch {
+        // "null" or malformed origins are rejected below
+      }
+      if (!LOOPBACK.has(hostname)) throw new HttpError(403, "forbidden origin");
     }
     if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
+      // Only the page's own script may run, even if a message ever slipped markup past escaping.
+      const nonce = randomBytes(18).toString("base64");
       res.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
         "cache-control": "no-store",
-        "content-security-policy": "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'",
+        "content-security-policy": `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
         "x-frame-options": "DENY",
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
       });
-      res.end(WEB_UI);
+      res.end(WEB_UI.replace("<script>", `<script nonce="${nonce}">`));
       return;
     }
     if (!url.pathname.startsWith("/api/")) throw new HttpError(404, "not found");

@@ -4,6 +4,11 @@ import { clipOutput, oneLine, truncateEnd } from "../util/text.ts";
 import { type Tool, ToolError } from "./types.ts";
 
 const MAX_FETCH_BYTES = 5 * 1024 * 1024;
+const MAX_REDIRECTS = 5;
+const FETCH_HEADERS = {
+  "user-agent": "Mozilla/5.0 (compatible; usta-agent/0.1; +https://github.com/serdar2751-stack/FRESH-REPOSITORY)",
+  accept: "text/markdown, text/html;q=0.9, text/plain;q=0.8, application/json;q=0.8, */*;q=0.5",
+};
 
 export const webfetchTool: Tool<{ url: string; format?: "markdown" | "text" | "html"; timeout?: number }> = {
   name: "webfetch",
@@ -42,20 +47,39 @@ export const webfetchTool: Tool<{ url: string; format?: "markdown" | "text" | "h
     });
     const timeout = Math.min(Math.max(1, input.timeout ?? 30), 120) * 1000;
     const signal = AbortSignal.any([ctx.signal, AbortSignal.timeout(timeout)]);
+    // Redirects are followed by hand: a new origin (another site, localhost, a
+    // cloud metadata address) needs its own approval.
+    let current = url;
     let res: Response;
-    try {
-      res = await fetch(url, {
-        signal,
-        redirect: "follow",
-        headers: {
-          "user-agent": "Mozilla/5.0 (compatible; usta-agent/0.1; +https://github.com/serdar2751-stack/FRESH-REPOSITORY)",
-          accept: "text/markdown, text/html;q=0.9, text/plain;q=0.8, application/json;q=0.8, */*;q=0.5",
-        },
-      });
-    } catch (err) {
-      throw new ToolError(`Fetch failed: ${(err as Error).message}`);
+    for (let hop = 0; ; hop++) {
+      try {
+        res = await fetch(current, { signal, redirect: "manual", headers: FETCH_HEADERS });
+      } catch (err) {
+        throw new ToolError(`Fetch failed: ${(err as Error).message}`);
+      }
+      const location = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
+      if (!location) break;
+      await res.body?.cancel().catch(() => {});
+      if (hop >= MAX_REDIRECTS) throw new ToolError(`Too many redirects (more than ${MAX_REDIRECTS}) from ${url}`);
+      let next: URL;
+      try {
+        next = new URL(location, current);
+      } catch {
+        throw new ToolError(`Invalid redirect location: ${location}`);
+      }
+      if (next.protocol !== "http:" && next.protocol !== "https:") throw new ToolError(`Refusing to follow a redirect to ${next.protocol} URL.`);
+      if (next.origin !== current.origin) {
+        await ctx.permit({
+          permission: "webfetch",
+          patterns: [next.toString()],
+          always: [`${next.origin}/*`],
+          title: `Follow redirect from ${current.origin} to ${next.toString()}`,
+          detail: { url: next.toString() },
+        });
+      }
+      current = next;
     }
-    if (!res.ok) throw new ToolError(`HTTP ${res.status} ${res.statusText} for ${url}`);
+    if (!res.ok) throw new ToolError(`HTTP ${res.status} ${res.statusText} for ${current}`);
     const type = res.headers.get("content-type") ?? "";
     const reader = res.body?.getReader();
     const chunks: Uint8Array[] = [];
@@ -88,13 +112,13 @@ export const webfetchTool: Tool<{ url: string; format?: "markdown" | "text" | "h
     let text = buf.toString("utf8");
     const format = input.format ?? "markdown";
     if (/html/.test(type) || /^\s*<(!doctype|html)/i.test(text)) {
-      if (format === "markdown") text = htmlToMarkdown(text, res.url || url.toString());
+      if (format === "markdown") text = htmlToMarkdown(text, current.toString());
       else if (format === "text") text = htmlToText(text);
     }
     const clipped = clipOutput(text, { maxBytes: 60_000, maxLines: 3000 });
     const notes = [cut ? "response exceeded 5 MB and was cut" : "", clipped.truncated ? "content truncated" : ""].filter(Boolean);
     return {
-      output: (res.url && res.url !== url.toString() ? `(redirected to ${res.url})\n\n` : "") + clipped.text + (notes.length ? `\n\n(${notes.join("; ")})` : ""),
+      output: (current.toString() !== url.toString() ? `(redirected to ${current})\n\n` : "") + clipped.text + (notes.length ? `\n\n(${notes.join("; ")})` : ""),
       title: `${url.host} (${Math.round(buf.length / 1024)} KB)`,
       metadata: { status: res.status, contentType: type, bytes: buf.length },
     };

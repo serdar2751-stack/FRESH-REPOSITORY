@@ -8,6 +8,8 @@ import { checkExternal, relPath, resolvePath, type Tool, ToolError } from "./typ
 
 const DEFAULT_LIMIT = 2000;
 const MAX_LINE = 2000;
+/** Output budget per call: long files are paged instead of clipped in the middle. */
+const MAX_OUTPUT_CHARS = 50_000;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
 interface ReadInput {
@@ -135,24 +137,30 @@ export const readTool: Tool<ReadInput> = {
       throw new ToolError(`offset ${offset} is past the end of the file (${total} lines).`);
     }
     let cut = 0;
-    const body = lines
-      .map((line, i) => {
-        let l = line;
-        if (l.length > MAX_LINE) {
-          l = l.slice(0, MAX_LINE) + " … [line truncated]";
-          cut++;
-        }
-        return `${String(offset + i).padStart(6)}\t${l}`;
-      })
-      .join("\n");
-    const last = offset + lines.length - 1;
+    let size = 0;
+    const out: string[] = [];
+    for (const [i, line] of lines.entries()) {
+      let l = line;
+      if (l.length > MAX_LINE) {
+        l = l.slice(0, MAX_LINE) + " … [line truncated]";
+        cut++;
+      }
+      const numbered = `${String(offset + i).padStart(6)}\t${l}`;
+      if (out.length && size + numbered.length + 1 > MAX_OUTPUT_CHARS) break;
+      out.push(numbered);
+      size += numbered.length + 1;
+    }
+    const last = offset + out.length - 1;
     const notes: string[] = [];
-    if (last < total || offset > 1) notes.push(`Showing lines ${offset}-${last} of ${total}.${last < total ? ` Use offset=${last + 1} to continue.` : ""}`);
+    if (last < total || offset > 1) {
+      const paged = out.length < lines.length ? " (output limit reached)" : "";
+      notes.push(`Showing lines ${offset}-${last} of ${total}${paged}.${last < total ? ` Use offset=${last + 1} to continue.` : ""}`);
+    }
     if (cut) notes.push(`${cut} long line(s) were truncated.`);
     return {
-      output: body + (notes.length ? `\n\n(${notes.join(" ")})` : ""),
+      output: out.join("\n") + (notes.length ? `\n\n(${notes.join(" ")})` : ""),
       title: rel,
-      metadata: { lines: lines.length, total, offset, path: rel },
+      metadata: { lines: out.length, total, offset, path: rel },
     };
   },
 };

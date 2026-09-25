@@ -31,6 +31,19 @@ describe("file tools", () => {
     assert.equal(ctx.permits[0]!.permission, "read");
   });
 
+  it("pages long files at an output budget instead of clipping them", async () => {
+    const ctx = makeContext(root);
+    const lines = Array.from({ length: 1500 }, (_, i) => `line ${i + 1} ${"x".repeat(60)}`);
+    await fs.writeFile(path.join(root, "big.txt"), lines.join("\n") + "\n");
+    const first = await readTool.execute({ file_path: "big.txt" }, ctx);
+    assert.ok(first.output.length <= 51_000);
+    const m = /Showing lines 1-(\d+) of 1500 \(output limit reached\)\. Use offset=(\d+) to continue\./.exec(first.output);
+    assert.ok(m, first.output.slice(-200));
+    assert.equal(Number(m[2]), Number(m[1]) + 1);
+    const next = await readTool.execute({ file_path: "big.txt", offset: Number(m[2]) }, ctx);
+    assert.match(next.output, new RegExp(`^ *${m[2]}\tline ${m[2]} `));
+  });
+
   it("refuses to edit unread files and edits read ones", async () => {
     const ctx = makeContext(root);
     await assert.rejects(editTool.execute({ file_path: "src/a.ts", old_string: "a + b", new_string: "a - b" }, ctx), /must read/);

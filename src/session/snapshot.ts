@@ -112,13 +112,26 @@ export class GitSnapshotter implements Snapshotter {
 
   async restore(id: string): Promise<FileChange[]> {
     const changed = await this.changes(id);
-    for (const c of changed) {
-      const abs = path.join(this.root, c.path);
-      if (c.status === "added") {
-        await fs.rm(abs, { force: true });
-        continue;
-      }
-      const blob = await this.git(["rev-parse", `${id}:${c.path}`]);
+    const added = changed.filter((c) => c.status === "added").map((c) => c.path);
+    const others = changed.filter((c) => c.status !== "added").map((c) => c.path);
+    for (const rel of added) await fs.rm(path.join(this.root, rel), { force: true });
+    // Directories the turn created and that are now empty go too.
+    const dirs = [...new Set(added.map((rel) => path.dirname(rel)).filter((d) => d !== "."))].sort((a, b) => b.length - a.length);
+    for (const d of dirs) await removeEmptyDirs(this.root, d);
+    if (others.length) {
+      // checkout restores content, the executable bit and symlinks exactly.
+      const res = await this.git(["--literal-pathspecs", "checkout", id, "--pathspec-from-file=-", "--pathspec-file-nul"], others.join("\0"));
+      if (res.code !== 0) await this.restoreContents(id, others);
+    }
+    await this.track();
+    return changed;
+  }
+
+  /** Fallback for old git versions: write the recorded contents back. */
+  private async restoreContents(id: string, files: string[]): Promise<void> {
+    for (const rel of files) {
+      const abs = path.join(this.root, rel);
+      const blob = await this.git(["rev-parse", `${id}:${rel}`]);
       const hash = blob.stdout.trim();
       if (!hash) continue;
       const raw = await this.catRaw(hash);
@@ -126,8 +139,6 @@ export class GitSnapshotter implements Snapshotter {
       await fs.mkdir(path.dirname(abs), { recursive: true });
       await fs.writeFile(abs, raw);
     }
-    await this.track();
-    return changed;
   }
 
   private async catRaw(hash: string): Promise<Buffer | undefined> {
@@ -143,6 +154,19 @@ export class GitSnapshotter implements Snapshotter {
 
   async beforeWrite(): Promise<void> {
     // The per-turn tree already captures everything.
+  }
+}
+
+/** Remove `rel` and its parents (below root) while they are empty directories. */
+async function removeEmptyDirs(root: string, rel: string): Promise<void> {
+  let dir = rel;
+  while (dir && dir !== "." && dir !== "/") {
+    try {
+      await fs.rmdir(path.join(root, dir));
+    } catch {
+      return; // not empty or already gone
+    }
+    dir = path.dirname(dir);
   }
 }
 

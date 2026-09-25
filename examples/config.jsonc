@@ -90,7 +90,11 @@
   "instructions": ["docs/CONVENTIONS.md"],
 
   // Summarize the conversation at 80% of the context window (or at maxContextTokens).
-  "compaction": { "auto": true, "threshold": 0.8, "maxContextTokens": 400000 },
+  // prune clears old tool outputs (file reads, command output) as the context grows.
+  "compaction": { "auto": true, "threshold": 0.8, "maxContextTokens": 400000, "prune": true },
+
+  // websearch backend; default: the first of TAVILY_API_KEY, BRAVE_API_KEY, EXA_API_KEY, else DuckDuckGo.
+  "search": { "provider": "brave", "apiKey": "env:BRAVE_API_KEY" },
 
   // Custom agents can also be Markdown files in .usta/agents/.
   "agents": {

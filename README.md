@@ -20,8 +20,8 @@
 ## Öne çıkanlar
 
 - **Çok sağlayıcılı, API tabanlı:** Anthropic (Claude), OpenAI, Google Gemini, OpenRouter, DeepSeek, Groq, Mistral, xAI, Together, Fireworks, Cerebras, Ollama, LM Studio ve OpenAI uyumlu her uç nokta. Oturum ortasında `/model` ile model değiştirilebilir.
-- **Güvenli varsayılanlar:** okuma serbest; düzenlemeler ve komutlar onay ister. Bash komutları ayrıştırılır (`&&`, `|`, `;`, `$(...)`, heredoc, yönlendirmeler) ve her alt komut ayrı değerlendirilir; `ls`, `git status`, `rg` gibi salt-okunur komutlar otomatik izinlidir, `echo x > dosya` değildir. `.env` okumak onay ister.
-- **Tam geri alma:** git depolarında proje `.git`'inize dokunmayan gizli bir "gölge" git deposu her turda anlık görüntü alır. `/undo` yalnızca ajan araçlarının değil, **bash komutlarının yaptığı değişiklikleri de** geri alır; `/redo` ile ileri alınır. Git olmayan dizinlerde araç düzenlemeleri geri alınır.
+- **Güvenli varsayılanlar:** okuma serbest; düzenlemeler ve komutlar onay ister. Bash komutları gerçekten çalışacak komutlara kadar ayrıştırılır: `&&`, `|`, `;`, `$(...)`, aritmetik genişletme, heredoc gövdeleri ve yönlendirmelerin yanı sıra `timeout`, `env`, `xargs`, `sh -c`, `find -exec`, `sudo` gibi sarmalayıcıların içi de değerlendirilir. `ls`, `git status`, `rg` gibi salt-okunur komutlar otomatik izinlidir. `echo x > dosya`, `PATH=. ls`, `rg --pre`, `git -c ...` ise değildir. `.env`, özel anahtarlar ve kimlik bilgisi dosyalarını okumak (bash ile de olsa) onay ister.
+- **Tam geri alma:** git depolarında proje `.git`'inize dokunmayan gizli bir "gölge" git deposu her turda anlık görüntü alır. `/undo` yalnızca ajan araçlarının değil, **bash komutlarının yaptığı değişiklikleri de** (çalıştırma izinleri ve sembolik bağlantılar dahil) birebir geri alır. `/rewind` (veya boş istemde `Esc Esc`) herhangi bir önceki isteme döner: kod ve konuşma, yalnız konuşma ya da yalnız kod. `/redo` ile ileri alınır. Git olmayan dizinlerde araç düzenlemeleri geri alınır.
 - **Modlar:** ⇧⇥ ile `normal` → `accept edits` (düzenlemeleri otomatik onayla) → `plan` (salt okunur araştırma; plan hazır olunca onaylı geçiş).
 - **Hook'lar:** `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `Stop`, `SessionStart`. Örn. her düzenlemeden sonra formatlayıcı çalıştır, ajan bitirmeden önce testleri koş ve kırmızıysa geri gönder.
 - **Alt ajanlar (sub-agent):** `explore` (salt okunur, hızlı keşif) ve `general`; Markdown dosyalarıyla kendi ajanlarınızı tanımlayın. Paralel çalışabilirler.
@@ -29,7 +29,9 @@
 - **LSP geri bildirimi:** düzenlemeden sonra dil sunucusunun (pyright, gopls, clangd; isteğe bağlı TypeScript, rust-analyzer) bulduğu **yeni** hatalar modele otomatik iletilir; dosyada zaten var olan hatalar gürültü yapmaz.
 - **Claude Code uyumluluğu:** `CLAUDE.md`, `.claude/agents`, `.claude/commands`, `.claude/skills` dosyalarını da okur; mevcut yapılandırmanız doğrudan çalışır.
 - **Üç kullanım biçimi:** etkileşimli terminal arayüzü, betik/CI için `usta run` (metin veya JSONL olay akışı) ve `usta serve` ile HTTP + SSE API ile yerleşik web arayüzü.
-- **Uzun oturumlar:** bağlam dolarken konuşma otomatik özetlenir (`/compact`), JSONL oturum kayıtları çökmelere dayanıklıdır, maliyet ve token kullanımı canlı gösterilir.
+- **Uzun oturumlar:** bağlam büyüdükçe eski araç çıktıları (dosya okumaları, komut çıktıları) önbelleği bozmayacak toplu adımlarla temizlenir; pencere dolarken konuşma otomatik özetlenir (`/compact`). JSONL oturum kayıtları çökmelere dayanıklıdır, maliyet ve token kullanımı canlı gösterilir.
+- **Web:** `webfetch` sayfaları Markdown'a çevirir (başka bir kökene yönlendirme yeniden onay ister); `websearch` Tavily, Brave veya Exa anahtarı varsa onları, yoksa DuckDuckGo'yu kullanır.
+- **Paylaşım:** `/export dosya.html`, betik içermeyen, açık/koyu temalı tek dosyalık bir oturum sayfası üretir (araç çağrıları, diff'ler, düşünme blokları dahil).
 - **Claude için ayarlanmış istemci:** adaptive thinking (özetli düşünme gösterimi), model başına uygun `effort`, prompt caching (sistem istemi + otomatik kuyruk önbelleği), düşünme bloklarının kayıpsız geri gönderimi (append-only geçmiş), sunucu tarafı refusal fallback, hata/yeniden deneme yönetimi.
 
 ## Kurulum
@@ -109,13 +111,15 @@ OpenAI sağlayıcısı varsayılan olarak **Responses API**'yi kullanır: istekl
 | `Ctrl+J`, `Alt+Enter`, satır sonunda `\` | Yeni satır |
 | `⇧⇥` (Shift+Tab) | Mod: normal → accept edits → plan |
 | `Esc` | Ajanı durdur · menüyü kapat |
+| `Esc Esc` | Girdiyi temizle · boş istemde: `/rewind` |
+| `Ctrl+G` | İstemi `$VISUAL` / `$EDITOR` ile yaz (ör. `EDITOR="code --wait"`) |
 | `Ctrl+C` | Girdiyi temizle · iki kez: çıkış |
 | `Ctrl+O` | Ayrıntılı görünüm (tam düşünme metni, tam araç çıktısı) |
 | `↑` `↓` | Geçmiş |
 | `@yol` | Dosya/görsel/dizin ekle (`@src/app.ts:10-40` satır aralığı) |
 | `!komut` | Kabuk komutu çalıştır, çıktısını modele bağlam olarak ver |
 
-Komutlar: `/help`, `/new`, `/sessions`, `/model`, `/agent`, `/mode`, `/plan`, `/effort`, `/compact`, `/undo`, `/redo`, `/diff [all]`, `/cost`, `/status`, `/init` (AGENTS.md oluşturur), `/export`, `/copy`, `/todos`, `/mcp`, `/permissions`, `/title`, `/login [sağlayıcı]`, `/verbose`, `/exit`. `/` yazınca tamamlama menüsü açılır. `/model` listesinde olmayan bir modeli "Other model…" ile `sağlayıcı/model` yazarak seçebilirsiniz.
+Komutlar: `/help`, `/new`, `/sessions`, `/model`, `/agent`, `/mode`, `/plan`, `/effort`, `/compact`, `/undo`, `/rewind`, `/redo`, `/diff [all]`, `/cost`, `/status`, `/init` (AGENTS.md oluşturur), `/export [dosya.md|dosya.html|html]`, `/copy`, `/todos`, `/mcp`, `/permissions`, `/title`, `/login [sağlayıcı]`, `/verbose`, `/exit`. `/` yazınca tamamlama menüsü açılır. `/model` listesinde olmayan bir modeli "Other model…" ile `sağlayıcı/model` yazarak seçebilirsiniz.
 
 İzin istemi şu seçenekleri sunar: bir kez izin ver · bu oturum için izin ver (ör. `git push *`) · bu projede hep izin ver · reddet ve ajana ne yapması gerektiğini söyle. Geri bildirimsiz ret turu durdurur; geri bildirimli ret ajana iletilir ve devam eder.
 
@@ -178,7 +182,13 @@ Kurallar araç (veya araç grubu) ve desen bazındadır; eşleşen **son** kural
 }
 ```
 
-İzin grupları: `read`, `edit`, `bash`, `webfetch`, `external_directory`, `task`, `skill` ve MCP araç adları. Bash'te `"@readonly": "allow"` yerleşik salt-okunur komut listesini temsil eder. İstemde "bu projede hep izin ver" seçilen kurallar deponuza değil kullanıcı veri dizinine kaydedilir (`/permissions` ile görün).
+İzin grupları: `read`, `edit`, `bash`, `webfetch`, `websearch`, `external_directory`, `task`, `skill` ve MCP araç adları. Bash'te `"@readonly": "allow"` yerleşik salt-okunur komut listesini temsil eder. İstemde "bu projede hep izin ver" seçilen kurallar deponuza değil kullanıcı veri dizinine kaydedilir (`/permissions` ile görün).
+
+Bash kuralları **gerçekten çalışacak komutlara** uygulanır:
+
+- `timeout 60 npm test`, `nice make` ya da `xargs rm` içindeki komut (`npm test`, `make`, `rm`) değerlendirilir. `bash -c '…'` betiğinin, `find -exec` ve `watch` gövdesinin komutları da ayrıca değerlendirilir. `sudo` hem kendisi hem içindeki komutla değerlendirilir. Böylece `"npm test *": "allow"` kuralı `timeout 60 npm test` için de geçerli olur, `"rm *": "deny"` kuralı ise `timeout 5 rm -rf x` için.
+- Programı değiştirebilecek ortam atamaları (`PATH=.`, `LD_PRELOAD=…`, `HOME=…`) desende görünür ve salt-okunur sayılmaz. `LANG=C`, `NO_COLOR=1`, `CI=true` gibi zararsızlar yok sayılır.
+- `$(( … ))` aritmetiğinin ve tırnaksız heredoc gövdelerinin içindeki `$(…)` / `` `…` `` komutları da bulunur. Çözümlenemeyen yapılar (kapanmayan tırnak, sonlandırıcısız heredoc) her zaman onaya düşer.
 
 ## Ajanlar, komutlar, skill'ler ve talimatlar
 
@@ -246,11 +256,22 @@ TypeScript ve Rust sunucuları proje kodu çalıştırabildiği için (tsserver 
 
 `"lsp": true` tüm yerleşik sunucuları, `"lsp": false` hepsini kapatır. Proje config'indeki `lsp` ayarı komut çalıştırdığı için yalnızca güvenilir projelerde uygulanır.
 
+## Web araması
+
+`websearch` aracı sonuçların başlığını, adresini ve özetini döndürür; model ilgili sayfaları `webfetch` ile okur. Arka uç şu sırayla seçilir: `search.provider` ayarı, ardından ortamda bulunan ilk anahtar (`TAVILY_API_KEY`, `BRAVE_API_KEY`, `EXA_API_KEY`). Hiçbiri yoksa anahtarsız DuckDuckGo HTML uç noktası kullanılır, ancak otomatik isteklere karşı engellenebilir.
+
+```jsonc
+"search": { "provider": "brave", "apiKey": "env:BRAVE_API_KEY" },
+"permission": { "websearch": "allow" }   // varsayılan: ilk aramada sorar
+```
+
 ## Oturumlar, geri alma ve sıkıştırma
 
 - Oturumlar `~/.local/share/usta/projects/<proje>/sessions/` altında, yalnızca eklemeli JSONL dosyaları olarak saklanır. `usta sessions`, `usta sessions export <id> [dosya]`, `usta -s <id>`.
-- `/undo` son turu geri alır (dosyalar + konuşma) ve isteminizi düzenlemeniz için girdi kutusuna geri koyar. `/diff` son turun, `/diff all` oturumun değişikliklerini gösterir.
+- `/undo` son turu geri alır (dosyalar + konuşma) ve isteminizi düzenlemeniz için girdi kutusuna geri koyar. `/rewind` daha eski bir isteme döner; kod ve konuşmayı birlikte ya da ayrı ayrı geri alabilirsiniz. `/diff` son turun, `/diff all` oturumun değişikliklerini gösterir.
+- **Araç çıktısı budama:** bağlam modele göre 40-120 bin token'ı aşınca, en yeni ~40 bin token'lık çıktı dışındaki eski araç çıktıları "temizlendi, gerekirse aracı tekrar çalıştır" notuyla değiştirilir. Kullanıcı cevapları, plan onayları, alt ajan raporları ve skill talimatları korunur. Budama en az 20 bin token'lık toplu adımlarla yapılır ki prompt önbelleği arada sıcak kalsın. Orijinaller oturum dosyasında durur (arayüz ve dışa aktarma bunları gösterir). Kapatmak için: `"compaction": { "prune": false }`.
 - Bağlam penceresi dolmaya yaklaşınca konuşma, işin durumunu koruyan ayrıntılı bir özetle değiştirilir. `/compact [talimat]` ile elle tetiklenebilir; `compaction.maxContextTokens` maliyeti sınırlamak için kullanılabilir.
+- `/export oturum.html` (veya `usta sessions export <id> oturum.html`) paylaşılabilir, betik içermeyen bir HTML sayfası, `.md` uzantısı ise Markdown dökümü üretir.
 
 ## Claude'a özel davranışlar
 
@@ -294,7 +315,7 @@ await rt.close();
 ## Geliştirme
 
 ```bash
-npm test            # birim + uçtan uca testler (sahte Anthropic / OpenAI Chat + Responses SSE sunucusu ve MCP sunucusu ile)
+npm test            # birim + uçtan uca testler (sahte Anthropic / OpenAI Chat + Responses SSE, MCP ve dil sunucusu ile)
 npm run typecheck
 npm run build       # dist/
 ```

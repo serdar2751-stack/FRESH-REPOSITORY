@@ -21,6 +21,7 @@ export interface HeadlessOptions {
   effort?: Effort;
   format: "text" | "json" | "quiet";
   maxSteps?: number;
+  maxCost?: number;
   /** Extra allow rules, e.g. "edit", "bash:npm test*", "webfetch". */
   allow?: string[];
   files?: string[];
@@ -64,6 +65,7 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
   const perms = allowRules(opts.allow);
   if (perms) extra.permission = perms;
   if (opts.maxSteps) extra.maxSteps = opts.maxSteps;
+  if (opts.maxCost !== undefined) extra.maxCost = opts.maxCost;
   let rt: Runtime;
   try {
     rt = await Runtime.create({ cwd: opts.cwd, model: opts.model, agent: opts.agent, yolo: opts.yolo, trusted: opts.trusted, interactive: false, config: extra });
@@ -71,6 +73,7 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
     process.stderr.write(`usta: ${(err as Error).message}\n`);
     return 1;
   }
+  if (opts.format !== "json") for (const w of rt.loaded.warnings) process.stderr.write(`usta: warning: ${w}\n`);
   let session: Session;
   try {
     session = opts.session
@@ -162,7 +165,7 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
         ) + "\n",
       );
     }
-    code = res.reason === "done" ? 0 : res.reason === "aborted" ? 130 : res.reason === "max_steps" ? 3 : 1;
+    code = res.reason === "done" ? 0 : res.reason === "aborted" ? 130 : res.reason === "max_steps" ? 3 : res.reason === "budget" ? 4 : 1;
   } catch (e) {
     err.write(`usta: ${(e as Error).message}\n`);
     code = 1;

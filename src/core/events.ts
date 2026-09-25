@@ -2,7 +2,7 @@ import type { PermissionDecision, PermissionRequest } from "../permission/permis
 import type { QuestionRequest } from "../tool/types.ts";
 import type { AssistantMessage, FileChange, TodoItem, ToolResultPart, Usage, UserMessage } from "./types.ts";
 
-export type TurnEndReason = "done" | "aborted" | "error" | "refusal" | "max_steps" | "max_tokens" | "blocked";
+export type TurnEndReason = "done" | "aborted" | "error" | "refusal" | "max_steps" | "max_tokens" | "blocked" | "budget";
 
 export type AgentEvent =
   | { type: "turn.start"; sessionId: string; turnId: string; message: UserMessage }

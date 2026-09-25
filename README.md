@@ -62,6 +62,8 @@ usta run "README'deki kurulum adımlarını doğrula" --allow edit
 
 Hiç anahtar yoksa `usta` ilk açılışta bir kurulum ekranı gösterir: sağlayıcıyı seçin, anahtarı yapıştırın (ekranda maskelenir). Anahtar kısa bir doğrulama çağrısıyla sınanır, reddedilirse kaydedilmez; kabul edilirse yalnızca size okunabilir bir dosyaya (`0600`) yazılır ve sağlayıcının önerilen modeli seçilir. Aynı akış sonradan `/login [sağlayıcı]` ile, terminal dışında `usta auth login anthropic` ile açılır.
 
+Kurulumda bir şey ters giderse `usta doctor` Node, git/ripgrep, yapılandırma (yanlış yazılmış ayarlar dahil), kimlik bilgileri, dil sunucuları ve arama arka ucunu denetler; `--online` anahtarları da sınar.
+
 Model seçim sırası: `-m` bayrağı → `USTA_MODEL` → config'deki `model` → arayüzde en son seçtiğiniz model (anahtarı hâlâ varsa) → ilk bulunan anahtara göre varsayılan: Anthropic → `claude-opus-5`, OpenAI → `gpt-5`, Gemini → `gemini-2.5-pro`.
 
 ## Sağlayıcılar ve modeller
@@ -119,7 +121,7 @@ OpenAI sağlayıcısı varsayılan olarak **Responses API**'yi kullanır: istekl
 | `@yol` | Dosya/görsel/dizin ekle (`@src/app.ts:10-40` satır aralığı) |
 | `!komut` | Kabuk komutu çalıştır, çıktısını modele bağlam olarak ver |
 
-Komutlar: `/help`, `/new`, `/sessions`, `/model`, `/agent`, `/mode`, `/plan`, `/effort`, `/compact`, `/undo`, `/rewind`, `/redo`, `/diff [all]`, `/cost`, `/status`, `/init` (AGENTS.md oluşturur), `/export [dosya.md|dosya.html|html]`, `/copy`, `/todos`, `/mcp`, `/permissions`, `/title`, `/login [sağlayıcı]`, `/verbose`, `/exit`. `/` yazınca tamamlama menüsü açılır. `/model` listesinde olmayan bir modeli "Other model…" ile `sağlayıcı/model` yazarak seçebilirsiniz.
+Komutlar: `/help`, `/new`, `/sessions`, `/model`, `/agent`, `/mode`, `/plan`, `/effort`, `/compact`, `/undo`, `/rewind`, `/redo`, `/review [ref]`, `/commit`, `/diff [all]`, `/cost`, `/status`, `/init` (AGENTS.md oluşturur), `/export [dosya.md|dosya.html|html]`, `/copy`, `/todos`, `/mcp`, `/permissions`, `/title`, `/login [sağlayıcı]`, `/verbose`, `/exit`. `/` yazınca tamamlama menüsü açılır. `/model` listesinde olmayan bir modeli "Other model…" ile `sağlayıcı/model` yazarak seçebilirsiniz.
 
 İzin istemi şu seçenekleri sunar: bir kez izin ver · bu oturum için izin ver (ör. `git push *`) · bu projede hep izin ver · reddet ve ajana ne yapması gerektiğini söyle. Geri bildirimsiz ret turu durdurur; geri bildirimli ret ajana iletilir ve devam eder.
 
@@ -134,7 +136,8 @@ usta run -c "devam et"                # son oturumu sürdür
 
 - `--format text|json|quiet` (kısaca `--json`, `-q`): `text` asistan metnini stdout'a, araç özetlerini stderr'e yazar; `json` her olayı bir JSON satırı olarak verir; `quiet` yalnızca son yanıtı yazar.
 - Etkileşimsiz modda onay gerektiren eylemler **reddedilir**; izin vermek için `--allow edit`, `--allow "bash:npm test*"`, `--allow webfetch` veya config kuralları kullanın. `--yolo` açıkça reddedilmeyen her şeye izin verir (yalnızca yalıtılmış ortamlarda kullanın).
-- Çıkış kodları: `0` tamam, `1` hata/ret, `3` adım sınırı, `130` kesildi.
+- `--max-cost 2.5` turu, alt ajanlar dahil 2,5 dolara ulaşınca durdurur (config'de `"maxCost"`); alt ajanlar kalan bütçeyi devralır. `--max-steps` adım sayısını sınırlar.
+- Çıkış kodları: `0` tamam, `1` hata/ret, `3` adım sınırı, `4` maliyet sınırı, `130` kesildi.
 
 ## HTTP API ve web arayüzü: `usta serve`
 
@@ -194,7 +197,7 @@ Bash kuralları **gerçekten çalışacak komutlara** uygulanır:
 
 - **Talimat dosyaları:** `~/.config/usta/AGENTS.md`, `~/.claude/CLAUDE.md`, proje kökünden çalışma dizinine kadar `AGENTS.md` / `CLAUDE.md` / `.usta/AGENTS.md` ve `instructions` ile belirtilenler sistem istemine eklenir. `/init` sizin için bir AGENTS.md hazırlar.
 - **Ajanlar:** `build` (varsayılan), `explore` ve `general` alt ajanları yerleşiktir. `.usta/agents/*.md` (veya `.claude/agents/*.md`) ile yenilerini ekleyin — örnek: [`examples/agents/reviewer.md`](examples/agents/reviewer.md). Ön bilgide `description`, `mode` (`primary` | `subagent` | `all`), `model`, `effort`, `tools`, `permission`, `maxSteps`; gövde sistem istemine eklenir.
-- **Özel komutlar:** `.usta/commands/ad.md` → `/ad`. `$ARGUMENTS`, `$1`…`$9` ve `` !`komut` `` (komut çıktısını ekler; proje komutlarında güven gerekir) desteklenir. Alt klasörler `/klasör:ad` olur. Örnek: [`examples/commands/test.md`](examples/commands/test.md).
+- **Özel komutlar:** `.usta/commands/ad.md` → `/ad`. `$ARGUMENTS`, `$1`…`$9` ve `` !`komut` `` (komut çıktısını ekler; proje komutlarında güven gerekir) desteklenir. Alt klasörler `/klasör:ad` olur. Örnek: [`examples/commands/test.md`](examples/commands/test.md). Yerleşik `/review [ref]` (değişiklikleri hata, güvenlik ve test açısından inceler, dosyalara dokunmaz) ve `/commit [ipucu]` (deponun mesaj üslubuyla commit atar, push etmez) aynı adlı bir dosyayla değiştirilebilir.
 - **Skill'ler:** `.usta/skills/<ad>/SKILL.md` (ve `.claude/skills`). Açıklamaları sistem isteminde listelenir, model gerektiğinde `skill` aracıyla yükler.
 
 ## Hook'lar

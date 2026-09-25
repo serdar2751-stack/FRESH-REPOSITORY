@@ -60,8 +60,46 @@ function loadDir(dir: string, source: string, scope: CommandInfo["scope"], prefi
   return out;
 }
 
+/** Commands that ship with usta; a user or project file with the same name replaces them. */
+const BUILTIN: CommandInfo[] = [
+  {
+    name: "review",
+    description: "Review uncommitted changes (or a ref) for bugs, security issues and missing tests",
+    argumentHint: "[ref or focus]",
+    source: "built-in",
+    scope: "global",
+    template: `Review code changes in this repository. Do not modify any files.
+
+Scope: $ARGUMENTS
+If no scope is given, review the uncommitted changes: \`git status\`, \`git diff\` and \`git diff --cached\`, including new untracked files. If a branch or ref is given, review \`git diff <ref>...HEAD\`. Otherwise treat the scope as what to focus on.
+
+Look for, in order of importance:
+1. Bugs: wrong logic, unhandled errors and edge cases, broken contracts with callers, concurrency problems.
+2. Security problems: injection, leaked secrets, unsafe input handling, permission mistakes.
+3. Missing or weak tests for the changed behavior.
+4. Maintainability: unclear names, duplication, dead code, inconsistency with the surrounding code.
+
+Read the surrounding code to confirm each finding; do not report guesses. Group findings by severity (critical, major, minor), each with file:line, what is wrong, why it matters and a concrete fix. End with a one-line verdict. If nothing significant turns up, say so briefly.`,
+  },
+  {
+    name: "commit",
+    description: "Commit the current changes with a message in the repository's style",
+    argumentHint: "[message hint]",
+    source: "built-in",
+    scope: "global",
+    template: `Create a git commit for the current changes.
+
+1. Run \`git status\`, \`git diff\`, \`git diff --cached\` and \`git log --oneline -10\` to see the changes and the repository's commit message style.
+2. Stage the files that belong to this change. Leave out unrelated changes, build output and anything that looks like a secret (.env files, keys, tokens), and say what you left out.
+3. Write the message in the repository's style: a concise subject line, then a short body explaining why when that is not obvious from the diff.
+4. Commit. Do not push, amend earlier commits or change git configuration. If there is nothing to commit, say so.
+
+Guidance from the user (may be empty): $ARGUMENTS`,
+  },
+];
+
 export function loadCommands(root: string): CommandInfo[] {
-  const map = new Map<string, CommandInfo>();
+  const map = new Map<string, CommandInfo>(BUILTIN.map((c) => [c.name, c]));
   const dirs: Array<[string, string, CommandInfo["scope"]]> = [
     [path.join(os.homedir(), ".claude", "commands"), "~/.claude/commands", "global"],
     [path.join(paths.config, "commands"), "global", "global"],

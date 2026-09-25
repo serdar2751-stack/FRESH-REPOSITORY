@@ -21,7 +21,7 @@ interface Parsed {
   flags: Map<string, string[]>;
 }
 
-const VALUE_FLAGS = new Set(["model", "agent", "session", "cwd", "effort", "port", "host", "token", "max-steps", "allow", "file", "mode", "format", "key"]);
+const VALUE_FLAGS = new Set(["model", "agent", "session", "cwd", "effort", "port", "host", "token", "max-steps", "max-cost", "allow", "file", "mode", "format", "key"]);
 const ALIASES: Record<string, string> = {
   m: "model",
   a: "agent",
@@ -37,7 +37,7 @@ const ALIASES: Record<string, string> = {
   "dangerously-skip-permissions": "yolo",
   "accept-edits": "auto-edit",
 };
-const COMMANDS = new Set(["run", "serve", "sessions", "models", "auth", "config", "trust", "untrust", "mcp", "help", "version", "export"]);
+const COMMANDS = new Set(["run", "serve", "sessions", "models", "auth", "config", "trust", "untrust", "mcp", "doctor", "help", "version", "export"]);
 
 export function parseArgs(argv: string[]): Parsed {
   const flags = new Map<string, string[]>();
@@ -90,6 +90,7 @@ ${c.bold("Usage")}
   usta config [paths]           show merged config and where it comes from
   usta trust | untrust          trust this project's hooks, MCP servers and permissions
   usta mcp                      connect configured MCP servers and list their tools
+  usta doctor [--online]        check the setup (tools, config, keys, language servers)
 
 ${c.bold("Options")}
   -m, --model <provider/model>  e.g. anthropic/claude-opus-5, openai/gpt-5, ollama/qwen3-coder
@@ -108,6 +109,7 @@ ${c.bold("usta run options")}
       --allow <rule>            allow without asking, e.g. edit, "bash:npm test*", webfetch (repeatable)
   -f, --file <path>             attach a file (repeatable)
       --max-steps <n>           stop after n model steps
+      --max-cost <usd>          stop once the turn has cost this much (exit code 4)
 
 ${c.bold("usta serve options")}
       --port <n> (default 4096)  --host <addr> (default 127.0.0.1)  --token <secret>  --no-auth
@@ -242,6 +244,12 @@ async function readSecret(prompt: string): Promise<string> {
   });
 }
 
+function positiveNumber(value: string, name: string): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) throw new Error(`${name} must be a positive number, got "${value}"`);
+  return n;
+}
+
 async function authCommand(p: Parsed, cwd: string): Promise<number> {
   const [sub = "list", provider] = p.positional;
   if (sub === "list") {
@@ -290,6 +298,7 @@ async function configCommand(p: Parsed, cwd: string): Promise<number> {
   try {
     console.log(c.gray(`# sources: ${rt.loaded.sources.map((s) => s.path).join(", ") || "(none)"}`));
     for (const w of rt.loaded.withheld) console.log(c.yellow(`# ignored (untrusted): ${w.keys.join(", ")} from ${w.path}`));
+    for (const w of rt.loaded.warnings) console.log(c.yellow(`# warning: ${w}`));
     const redacted = JSON.parse(JSON.stringify(rt.config, (k, v) => (k === "apiKey" && typeof v === "string" && !v.startsWith("env:") ? "***" : v)));
     console.log(JSON.stringify(redacted, null, 2));
     console.log(c.gray(`# default model: ${rt.config.model ?? rt.registry.defaultModelRef() ?? "(none)"}`));
@@ -352,6 +361,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         effort: effortFrom(p),
         format,
         maxSteps: flag(p, "max-steps") ? Number(flag(p, "max-steps")) : undefined,
+        maxCost: flag(p, "max-cost") ? positiveNumber(flag(p, "max-cost")!, "--max-cost") : undefined,
         allow: p.flags.get("allow"),
         files: p.flags.get("file"),
         verbose: bool(p, "verbose"),
@@ -390,6 +400,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       return 0;
     case "mcp":
       return mcpCommand(cwd, trusted);
+    case "doctor": {
+      const { runDoctor } = await import("./doctor.ts");
+      return runDoctor(cwd, { online: bool(p, "online") });
+    }
     default: {
       if (bool(p, "print")) {
         const { runHeadless } = await import("./headless.ts");

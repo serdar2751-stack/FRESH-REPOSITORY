@@ -320,6 +320,25 @@ describe("engine", () => {
     assert.equal(await off.rt.engine.pruneToolOutputs(s2, model), 0);
   });
 
+  it("stops a turn at its cost limit", async () => {
+    const dir = await project();
+    await fs.writeFile(path.join(dir, "a.txt"), "hello\n");
+    const { rt, events } = await runtime(dir, { config: { maxCost: 0.6 } });
+    // claude-opus-5 input is $5/M: each 100k-token step costs ~$0.50.
+    for (let i = 0; i < 3; i++) mock.push({ blocks: [{ type: "tool_use", name: "read", input: { file_path: "a.txt" } }], usage: { input: 100_000, output: 10 } });
+    const s = await rt.newSession();
+    const res = await rt.engine.prompt(s, { text: "keep reading" }, { signal: signal() });
+    assert.equal(res.reason, "budget");
+    assert.equal(mock.requests.length, 2);
+    assert.ok(res.cost! >= 0.6 && res.cost! < 1.1);
+    assert.ok(events.some((e) => e.type === "notice" && /reaching the \$0\.60 limit/.test(e.message)));
+    mock.reset();
+    // A per-turn limit overrides the config.
+    mock.push({ blocks: [{ type: "text", text: "cheap" }], usage: { input: 100, output: 10 } });
+    const ok = await rt.engine.prompt(s, { text: "one more" }, { signal: signal(), maxCost: 5 });
+    assert.equal(ok.reason, "done");
+  });
+
   it("delegates to a sub-agent", async () => {
     const dir = await project();
     const { rt, events } = await runtime(dir);

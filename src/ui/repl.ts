@@ -351,6 +351,7 @@ export async function runRepl(opts: ReplOptions): Promise<number> {
     print(c.gray(`  ${displayPath(rt.cwd, os.homedir())}${git}`));
     print(c.gray("  /help commands · @ attach files · ! shell · ⇧⇥ modes · esc interrupt · ctrl+c twice to exit"));
     for (const w of rt.loaded.withheld) print(c.yellow(`  ! Ignored ${w.keys.join(", ")} from ${displayPath(w.path, rt.cwd)} (folder not trusted)`));
+    for (const w of rt.loaded.warnings) print(c.yellow(`  ! ${w.replace(os.homedir(), "~")}`));
     for (const st of rt.mcp.statuses.values()) {
       if (st.status === "failed") print(c.yellow(`  ! MCP server "${st.name}" failed: ${truncateEnd(st.error ?? "", 160)}`));
     }

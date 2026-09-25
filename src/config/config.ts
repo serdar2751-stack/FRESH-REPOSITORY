@@ -3,6 +3,7 @@ import path from "node:path";
 import type { Effort } from "../core/types.ts";
 import type { Pricing } from "../provider/types.ts";
 import { parseJsonc } from "../util/jsonc.ts";
+import { levenshtein } from "../util/text.ts";
 import { paths } from "./paths.ts";
 
 export type PermissionAction = "allow" | "ask" | "deny";
@@ -97,6 +98,8 @@ export interface Config {
   thinking?: boolean;
   maxOutputTokens?: number;
   maxSteps?: number;
+  /** Stop a turn once it has cost this much (USD, including sub-agents). */
+  maxCost?: number;
   providers?: Record<string, ProviderConfig>;
   permission?: PermissionConfig;
   agents?: Record<string, AgentConfig>;
@@ -138,6 +141,81 @@ export interface LoadedConfig {
   sources: ConfigSource[];
   /** Privileged settings found in project config but not applied (untrusted project). */
   withheld: Array<{ path: string; keys: string[] }>;
+  /** Unknown or mistyped settings. */
+  warnings: string[];
+}
+
+type Kind = "string" | "number" | "boolean" | "object" | "array" | "any";
+
+const TOP_LEVEL: Record<string, Kind> = {
+  $schema: "string",
+  model: "string",
+  smallModel: "string",
+  effort: "string",
+  thinking: "boolean",
+  maxOutputTokens: "number",
+  maxSteps: "number",
+  maxCost: "number",
+  providers: "object",
+  permission: "object",
+  agents: "object",
+  defaultAgent: "string",
+  mcp: "object",
+  hooks: "object",
+  instructions: "array",
+  compaction: "object",
+  snapshots: "boolean",
+  tools: "object",
+  notify: "boolean",
+  lsp: "any",
+  search: "object",
+};
+
+const NESTED: Record<string, Record<string, Kind>> = {
+  compaction: { auto: "boolean", threshold: "number", maxContextTokens: "number", model: "string", prune: "boolean" },
+  search: { provider: "string", apiKey: "string" },
+};
+
+const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+
+function closest(name: string, candidates: string[]): string | undefined {
+  let best: string | undefined;
+  let bestD = Infinity;
+  for (const c of candidates) {
+    const d = levenshtein(name.toLowerCase(), c.toLowerCase());
+    if (d < bestD) {
+      best = c;
+      bestD = d;
+    }
+  }
+  return best && bestD <= Math.max(2, Math.floor(name.length / 3)) ? best : undefined;
+}
+
+function checkKeys(obj: Record<string, unknown>, known: Record<string, Kind>, where: string, prefix: string): string[] {
+  const out: string[] = [];
+  for (const [key, value] of Object.entries(obj)) {
+    const want = known[key];
+    if (!want) {
+      const guess = closest(key, Object.keys(known));
+      out.push(`${where}: unknown setting "${prefix}${key}"${guess ? ` (did you mean "${prefix}${guess}"?)` : ""}`);
+      continue;
+    }
+    if (want === "any" || value === null || value === undefined) continue;
+    const actual = Array.isArray(value) ? "array" : typeof value;
+    if (actual !== want) out.push(`${where}: "${prefix}${key}" should be ${want === "array" || want === "object" ? "an" : "a"} ${want}, not ${actual}`);
+  }
+  return out;
+}
+
+/** Unknown or mistyped settings in one config file (typos are otherwise silently ignored). */
+export function configWarnings(c: Config, where: string): string[] {
+  const out = checkKeys(c as Record<string, unknown>, TOP_LEVEL, where, "");
+  for (const [key, known] of Object.entries(NESTED)) {
+    const v = (c as Record<string, unknown>)[key];
+    if (isPlainObject(v)) out.push(...checkKeys(v, known, where, `${key}.`));
+  }
+  if (typeof c.effort === "string" && !EFFORTS.includes(c.effort)) out.push(`${where}: "effort" must be one of ${EFFORTS.join(", ")}`);
+  return out;
 }
 
 function readConfigFile(file: string): Config | undefined {
@@ -214,17 +292,20 @@ export function projectConfigFiles(root: string, cwd: string): string[] {
 export function loadConfig(opts: { root: string; cwd: string; trusted: boolean; extra?: Config }): LoadedConfig {
   const sources: ConfigSource[] = [];
   const withheld: LoadedConfig["withheld"] = [];
+  const warnings: string[] = [];
   let config: Config = {};
   for (const file of globalConfigFiles()) {
     const c = readConfigFile(file);
     if (c) {
       sources.push({ path: file, scope: "global", config: c });
+      warnings.push(...configWarnings(c, file));
       config = mergeConfig(config, c);
     }
   }
   for (const file of projectConfigFiles(opts.root, opts.cwd)) {
     let c = readConfigFile(file);
     if (!c) continue;
+    warnings.push(...configWarnings(c, file));
     if (!opts.trusted) {
       const keys = PRIVILEGED_KEYS.filter((k) => c![k] !== undefined);
       if (keys.length) {
@@ -238,7 +319,7 @@ export function loadConfig(opts: { root: string; cwd: string; trusted: boolean; 
   }
   if (process.env.USTA_MODEL) config.model = process.env.USTA_MODEL;
   if (opts.extra) config = mergeConfig(config, opts.extra);
-  return { config, sources, withheld };
+  return { config, sources, withheld, warnings };
 }
 
 /** Whether any project config file declares privileged settings. */

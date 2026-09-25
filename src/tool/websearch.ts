@@ -40,6 +40,13 @@ export function searchBackend(config: Config): { backend: Backend; key?: string 
   return { backend: "duckduckgo" };
 }
 
+/** One-line description of the search backend for `usta doctor`. */
+export function websearchBackendSummary(config: Config): { ok: boolean; text: string } {
+  const { backend, key } = searchBackend(config);
+  if (backend === "duckduckgo") return { ok: false, text: "DuckDuckGo (no API key; may be blocked). Set TAVILY_API_KEY, BRAVE_API_KEY or EXA_API_KEY for a reliable backend" };
+  return key ? { ok: true, text: backend } : { ok: false, text: `${backend} selected but no API key found` };
+}
+
 async function getJson(url: string, init: RequestInit, signal: AbortSignal): Promise<Record<string, unknown>> {
   const res = await fetch(url, { ...init, signal });
   if (!res.ok) {

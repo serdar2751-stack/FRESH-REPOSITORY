@@ -214,3 +214,43 @@ describe("html export", () => {
     assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   });
 });
+
+describe("config validation", () => {
+  it("flags unknown and mistyped settings with suggestions", async () => {
+    const { configWarnings } = await import("../src/config/config.ts");
+    const w = configWarnings(
+      { permisson: { bash: "allow" }, maxSteps: "10", effort: "extreme", compaction: { prnue: false }, model: "anthropic/claude-opus-5", lsp: true } as never,
+      "usta.json",
+    );
+    assert.deepEqual(w, [
+      'usta.json: unknown setting "permisson" (did you mean "permission"?)',
+      'usta.json: "maxSteps" should be a number, not string',
+      'usta.json: unknown setting "compaction.prnue" (did you mean "compaction.prune"?)',
+      "usta.json: \"effort\" must be one of low, medium, high, xhigh, max",
+    ]);
+    assert.deepEqual(configWarnings({ model: "x", providers: {}, lsp: { python: false } }, "ok.json"), []);
+  });
+});
+
+describe("built-in commands", () => {
+  it("ships /review and /commit, which project files can replace", async () => {
+    const { loadCommands, expandCommand } = await import("../src/commands/commands.ts");
+    const { tempDir } = await import("./helpers/context.ts");
+    const fsp = await import("node:fs/promises");
+    const pathMod = await import("node:path");
+    const root = await tempDir("usta-cmd-");
+    const builtin = loadCommands(root);
+    const review = builtin.find((c) => c.name === "review");
+    assert.equal(review?.source, "built-in");
+    assert.ok(builtin.some((c) => c.name === "commit"));
+    const expanded = await expandCommand(review!, "main", { cwd: root, allowShell: false });
+    assert.match(expanded.prompt, /^Review code changes/);
+    assert.match(expanded.prompt, /Scope: main\n/);
+    assert.match(expanded.prompt, /`git diff <ref>\.\.\.HEAD`/);
+    await fsp.mkdir(pathMod.join(root, ".usta", "commands"), { recursive: true });
+    await fsp.writeFile(pathMod.join(root, ".usta", "commands", "review.md"), "---\ndescription: team review\n---\nOur review checklist");
+    const replaced = loadCommands(root).find((c) => c.name === "review");
+    assert.equal(replaced?.description, "team review");
+    assert.equal(replaced?.source, ".usta/commands");
+  });
+});

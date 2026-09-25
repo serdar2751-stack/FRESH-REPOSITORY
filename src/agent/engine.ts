@@ -46,6 +46,8 @@ export interface PromptInput {
 export interface TurnOptions {
   signal: AbortSignal;
   maxSteps?: number;
+  /** Spending limit for the turn in USD (default: config maxCost). */
+  maxCost?: number;
   /** Mode inherited from the parent session (sub-agents). */
   inheritedMode?: Mode;
 }
@@ -156,6 +158,8 @@ export class Engine {
   private readonly plans = new Map<string, (r: PlanReview) => void>();
   /** Sessions with a turn in progress. */
   private readonly running = new Set<string>();
+  /** Spending limits of running turns, so sub-agents inherit what is left. */
+  private readonly budgets = new Map<string, { limit: number; costAtStart: number }>();
 
   constructor(opts: EngineOptions) {
     this.opts = opts;
@@ -332,6 +336,13 @@ export class Engine {
     this.emit({ type: "turn.start", sessionId: session.id, turnId, message: userMsg });
 
     const maxSteps = opts.maxSteps ?? agent.maxSteps ?? this.opts.config.maxSteps ?? (session.isSubagent ? 200 : 500);
+    const maxCost = opts.maxCost ?? this.opts.config.maxCost;
+    if (maxCost !== undefined) {
+      this.budgets.set(session.id, { limit: maxCost, costAtStart });
+      if (!model.pricing) {
+        this.emit({ type: "notice", sessionId: session.id, level: "warn", message: `maxCost cannot be enforced: no pricing is known for ${model.id}.` });
+      }
+    }
     const recentCalls: string[] = [];
     let stopHookRuns = 0;
     let reason: TurnEndReason = "done";
@@ -346,6 +357,16 @@ export class Engine {
         if (steps >= maxSteps) {
           reason = "max_steps";
           this.emit({ type: "notice", sessionId: session.id, level: "warn", message: `Stopped after ${maxSteps} steps (maxSteps).` });
+          break;
+        }
+        if (maxCost !== undefined && session.meta.cost - costAtStart >= maxCost) {
+          reason = "budget";
+          this.emit({
+            type: "notice",
+            sessionId: session.id,
+            level: "warn",
+            message: `Stopped: this turn has cost $${(session.meta.cost - costAtStart).toFixed(2)}, reaching the $${maxCost.toFixed(2)} limit (maxCost).`,
+          });
           break;
         }
         steps++;
@@ -439,6 +460,8 @@ export class Engine {
       reason = signal.aborted ? "aborted" : "error";
       error = (err as Error).message;
       if (reason === "error") this.emit({ type: "notice", sessionId: session.id, level: "error", message: error });
+    } finally {
+      this.budgets.delete(session.id);
     }
 
     const u = session.meta.usage;
@@ -898,8 +921,11 @@ export class Engine {
       effort: agent.effort ?? parent.meta.effort,
     });
     this.emit({ type: "subagent.start", sessionId: child.id, parentSessionId: parent.id, parentCallId, agent: agent.name, description: req.description });
+    // A sub-agent may spend what is left of the parent turn's budget.
+    const budget = this.budgets.get(parent.id);
+    const remaining = budget ? Math.max(0, budget.limit - (parent.meta.cost - budget.costAtStart)) : undefined;
     try {
-      const res = await this.prompt(child, { text: req.prompt }, { signal, inheritedMode: parent.meta.mode });
+      const res = await this.prompt(child, { text: req.prompt }, { signal, inheritedMode: parent.meta.mode, maxCost: remaining });
       await parent.addUsage(res.usage, res.cost, parent.meta.lastContextTokens);
       const calls = child.messages.reduce((n, m) => n + (m.role === "assistant" ? m.parts.filter((p) => p.type === "tool_call").length : 0), 0);
       const status = res.reason === "done" ? "" : `\n\n(The sub-agent stopped early: ${res.reason}${res.error ? ` - ${res.error}` : ""}.)`;

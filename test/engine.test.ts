@@ -240,6 +240,48 @@ describe("engine", () => {
     assert.equal(s.active.length, 2);
   });
 
+  it("clears old tool outputs once the context grows, keeping recent ones", async () => {
+    const dir = await project();
+    const { rt, events } = await runtime(dir);
+    const s = await rt.newSession();
+    const model = await rt.engine.resolveModel(s);
+    const big = "x".repeat(40_000); // ~10k tokens each
+    for (let i = 0; i < 8; i++) {
+      await s.add({ id: `a${i}`, role: "assistant", time: 0, provider: "anthropic", model: model.id, parts: [{ type: "tool_call", id: `call_${i}`, name: i === 1 ? "question" : "read", input: {} }] });
+      await s.add({ id: `u${i}`, role: "user", time: 0, origin: "tool_results", parts: [{ type: "tool_result", callId: `call_${i}`, name: i === 1 ? "question" : "read", output: `${i}:${big}` }] });
+    }
+    // Small contexts are left alone.
+    assert.equal(await rt.engine.pruneToolOutputs(s, model), 0);
+    await s.update({ lastContextTokens: 200_000 });
+    const freed = await rt.engine.pruneToolOutputs(s, model);
+    // The newest ~40k tokens stay; older outputs go, except answers to questions.
+    assert.deepEqual([...s.pruned].sort(), ["call_0", "call_2", "call_3"]);
+    assert.ok(freed >= 30_000);
+    assert.ok(events.some((e) => e.type === "notice" && /Cleared 3 old tool outputs/.test(e.message)));
+    const ctx = s.context();
+    const outputs = ctx.flatMap((m) => (m.role === "user" ? m.parts : [])).map((p) => (p.type === "tool_result" ? p.output.slice(0, 2) : ""));
+    assert.deepEqual(outputs.map((o) => o.startsWith("[") ? "cleared" : o), ["cleared", "1:", "cleared", "cleared", "4:", "5:", "6:", "7:"]);
+    // The session keeps the originals; the pruning survives a reload.
+    assert.ok(s.messages.every((m) => m.role !== "user" || m.parts.every((p) => p.type !== "tool_result" || p.output.length > 40_000)));
+    const reloaded = await rt.store.load(s.id);
+    assert.deepEqual([...reloaded.pruned].sort(), ["call_0", "call_2", "call_3"]);
+    // The next request carries the placeholder.
+    mock.push({ blocks: [{ type: "text", text: "ok" }] });
+    await rt.engine.prompt(s, { text: "continue" }, { signal: signal() });
+    const sent = JSON.stringify(mock.requests[0]!.body.messages);
+    assert.match(sent, /Output of this read call was cleared/);
+    assert.ok(!sent.includes("0:xxxx"));
+    assert.ok(sent.includes("7:xxxx"));
+    // prune: false turns it off.
+    const off = await runtime(dir, { config: { compaction: { prune: false } } });
+    const s2 = await off.rt.newSession();
+    for (let i = 0; i < 8; i++) {
+      await s2.add({ id: `b${i}`, role: "user", time: 0, origin: "tool_results", parts: [{ type: "tool_result", callId: `c${i}`, name: "read", output: big }] });
+    }
+    await s2.update({ lastContextTokens: 200_000 });
+    assert.equal(await off.rt.engine.pruneToolOutputs(s2, model), 0);
+  });
+
   it("delegates to a sub-agent", async () => {
     const dir = await project();
     const { rt, events } = await runtime(dir);

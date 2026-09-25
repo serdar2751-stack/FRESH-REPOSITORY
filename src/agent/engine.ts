@@ -99,6 +99,12 @@ export interface EngineOptions {
 const MAX_RETRIES = 8;
 const MAX_STOP_HOOK_CONTINUATIONS = 5;
 const TOOL_OUTPUT_CAP = 60_000;
+/** Most recent tool output (tokens) that is never pruned. */
+const PRUNE_PROTECT = 40_000;
+/** Prune only when at least this much (tokens) can be cleared at once, to keep cache hits. */
+const PRUNE_MINIMUM = 20_000;
+/** Tool results that carry decisions or instructions rather than re-fetchable data. */
+const KEEP_OUTPUT = new Set(["question", "exit_plan_mode", "task", "skill", "todowrite"]);
 
 export const COMPACTION_PROMPT = `Your task now is to write a detailed summary of this conversation. It will replace the conversation as the only context for continuing the work in a fresh context window, so capture everything needed to carry on without re-reading it:
 
@@ -301,6 +307,7 @@ export class Engine {
     }
 
     // Compact before adding a prompt that would overflow the window.
+    await this.pruneToolOutputs(session, model);
     if (this.needsCompaction(session, model, estimateTokens(input.text))) {
       await this.compact(session, { signal, auto: true }).catch((err) => {
         this.emit({ type: "notice", sessionId: session.id, level: "warn", message: `Compaction failed: ${(err as Error).message}` });
@@ -421,6 +428,7 @@ export class Engine {
           reason = "aborted";
           break;
         }
+        await this.pruneToolOutputs(session, model);
         if (msg.stopReason === "context_window" || this.needsCompaction(session, model, 0)) {
           await this.compact(session, { signal, auto: true }).catch((err) => {
             this.emit({ type: "notice", sessionId: session.id, level: "warn", message: `Compaction failed: ${(err as Error).message}` });
@@ -481,7 +489,7 @@ export class Engine {
       const req: ChatRequest = {
         model,
         system: session.meta.system,
-        messages: session.active,
+        messages: session.context(),
         tools: toolSpecs(tools),
         maxOutputTokens: this.opts.config.maxOutputTokens,
         effort: this.effort(session, agent, model),
@@ -930,6 +938,47 @@ export class Engine {
 
   // ----- context management -----
 
+  /**
+   * Once the context grows, replace old tool outputs (file reads, command
+   * output) with a short note. The most recent outputs are kept, and pruning
+   * happens in large batches so prompt caches stay warm in between.
+   */
+  async pruneToolOutputs(session: Session, model: ModelInfo): Promise<number> {
+    if (this.opts.config.compaction?.prune === false) return 0;
+    const start = Math.max(40_000, Math.min(120_000, this.compactionThreshold(model) * 0.4));
+    if (session.meta.lastContextTokens < start) return 0;
+    const active = session.active;
+    let recent = 0;
+    const ids: string[] = [];
+    let freed = 0;
+    for (let i = active.length - 1; i >= 0; i--) {
+      const m = active[i]!;
+      if (m.role !== "user") continue;
+      for (let k = m.parts.length - 1; k >= 0; k--) {
+        const p = m.parts[k]!;
+        if (p.type !== "tool_result" || session.pruned.has(p.callId)) continue;
+        const tokens = estimateTokens(p.output) + (p.images?.length ?? 0) * 1500;
+        if (recent < PRUNE_PROTECT) {
+          recent += tokens;
+          continue;
+        }
+        if (KEEP_OUTPUT.has(p.name) || tokens < 100) continue;
+        ids.push(p.callId);
+        freed += tokens;
+      }
+    }
+    if (freed < PRUNE_MINIMUM) return 0;
+    await session.prune(ids);
+    await session.update({ lastContextTokens: Math.max(0, session.meta.lastContextTokens - freed) });
+    this.emit({
+      type: "notice",
+      sessionId: session.id,
+      level: "info",
+      message: `Cleared ${ids.length} old tool output${ids.length === 1 ? "" : "s"} (~${Math.round(freed / 1000)}k tokens) to keep the context lean.`,
+    });
+    return freed;
+  }
+
   compactionThreshold(model: ModelInfo): number {
     const c = this.opts.config.compaction ?? {};
     const ratio = c.threshold ?? 0.8;
@@ -977,17 +1026,18 @@ export class Engine {
       sessionId: session.id,
     });
     let res: ChatResponse;
+    const context = session.context();
     try {
-      res = await provider.chat(request(active), () => {});
+      res = await provider.chat(request(context), () => {});
     } catch (err) {
       if (!(err instanceof ProviderError) || err.kind !== "context_overflow") throw err;
       // Too large even to summarize: keep the most recent part that fits.
       const budget = model.contextWindow * 0.5 * 4;
       let size = 0;
-      let start = active.length;
-      while (start > 0 && size < budget) size += JSON.stringify(active[--start]).length;
-      while (start < active.length && !(active[start]!.role === "user" && (active[start] as UserMessage).origin !== "tool_results")) start++;
-      res = await provider.chat(request(active.slice(start)), () => {});
+      let start = context.length;
+      while (start > 0 && size < budget) size += JSON.stringify(context[--start]).length;
+      while (start < context.length && !(context[start]!.role === "user" && (context[start] as UserMessage).origin !== "tool_results")) start++;
+      res = await provider.chat(request(context.slice(start)), () => {});
     }
     const summary = textOf(res.parts).trim();
     if (!summary) throw new Error("The model returned an empty summary.");

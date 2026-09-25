@@ -58,7 +58,13 @@ type Record_ =
   | ({ t: "header" } & SessionHeader)
   | ({ t: "meta" } & Partial<SessionMeta>)
   | { t: "msg"; m: Message }
-  | { t: "truncate"; n: number };
+  | { t: "truncate"; n: number }
+  | { t: "prune"; ids: string[] };
+
+/** Stand-in for a cleared tool output (the original stays in the session file). */
+export function prunedOutput(tool: string): string {
+  return `[Output of this ${tool} call was cleared to keep the context small. Run the tool again if you need it.]`;
+}
 
 export function projectId(root: string): string {
   const base = path.basename(root).replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 40) || "root";
@@ -71,15 +77,18 @@ export class Session {
   messages: Message[];
   /** Undo history (in memory only). */
   redo: RedoEntry[] = [];
+  /** Tool calls whose outputs are no longer sent to the model. */
+  readonly pruned: Set<string>;
   private readonly file: string;
   private readonly store: SessionStore;
   private writeChain: Promise<void> = Promise.resolve();
 
-  constructor(store: SessionStore, header: SessionHeader, meta: SessionMeta, messages: Message[]) {
+  constructor(store: SessionStore, header: SessionHeader, meta: SessionMeta, messages: Message[], pruned: Iterable<string> = []) {
     this.store = store;
     this.header = header;
     this.meta = meta;
     this.messages = messages;
+    this.pruned = new Set(pruned);
     this.file = store.fileFor(header.id);
   }
 
@@ -91,9 +100,34 @@ export class Session {
     return Boolean(this.header.parentId);
   }
 
-  /** Messages sent to the model. */
+  /** Messages in the current context window (since the last compaction). */
   get active(): Message[] {
     return this.messages.slice(this.meta.contextStart);
+  }
+
+  /** The active messages as sent to the model: pruned tool outputs replaced. */
+  context(): Message[] {
+    const active = this.active;
+    if (!this.pruned.size) return active;
+    return active.map((m) => {
+      if (m.role !== "user" || !m.parts.some((p) => p.type === "tool_result" && this.pruned.has(p.callId))) return m;
+      return {
+        ...m,
+        parts: m.parts.map((p) => {
+          if (p.type !== "tool_result" || !this.pruned.has(p.callId)) return p;
+          const { images: _images, ...rest } = p;
+          return { ...rest, output: prunedOutput(p.name) };
+        }),
+      };
+    });
+  }
+
+  /** Stop sending the outputs of these tool calls to the model. */
+  async prune(callIds: string[]): Promise<void> {
+    const fresh = callIds.filter((id) => !this.pruned.has(id));
+    if (!fresh.length) return;
+    for (const id of fresh) this.pruned.add(id);
+    await this.append([{ t: "prune", ids: fresh }]);
   }
 
   /** Last persistence error, surfaced by UIs. */
@@ -204,6 +238,7 @@ export class SessionStore {
     let header: SessionHeader | undefined;
     const meta: Partial<SessionMeta> = {};
     const messages: Message[] = [];
+    const pruned: string[] = [];
     const rl = readline.createInterface({ input: createReadStream(file, { encoding: "utf8" }), crlfDelay: Infinity });
     for await (const line of rl) {
       if (!line.trim()) continue;
@@ -221,6 +256,7 @@ export class SessionStore {
         Object.assign(meta, m);
       } else if (rec.t === "msg") messages.push(rec.m);
       else if (rec.t === "truncate") messages.length = Math.min(rec.n, messages.length);
+      else if (rec.t === "prune") pruned.push(...rec.ids);
     }
     if (!header) throw new Error(`Session ${id} is corrupt (no header).`);
     const full: SessionMeta = {
@@ -238,7 +274,7 @@ export class SessionStore {
       ...meta,
     };
     if (full.contextStart > messages.length) full.contextStart = messages.length;
-    return new Session(this, header, full, messages);
+    return new Session(this, header, full, messages, pruned);
   }
 
   async exists(id: string): Promise<boolean> {

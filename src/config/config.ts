@@ -105,7 +105,14 @@ export interface Config {
   hooks?: Partial<Record<HookEvent, HookConfig[]>>;
   /** Extra instruction files (paths or globs) added to the system prompt. */
   instructions?: string[];
-  compaction?: { auto?: boolean; threshold?: number; maxContextTokens?: number; model?: string };
+  compaction?: {
+    auto?: boolean;
+    threshold?: number;
+    maxContextTokens?: number;
+    model?: string;
+    /** Clear old tool outputs once the context grows (default true). */
+    prune?: boolean;
+  };
   snapshots?: boolean;
   /** Globally enable/disable tools by name. */
   tools?: Record<string, boolean>;

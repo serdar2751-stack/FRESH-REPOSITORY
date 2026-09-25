@@ -1,5 +1,5 @@
 import path from "node:path";
-import { commandPrefix, parseShell } from "../permission/bash.ts";
+import { alwaysPattern, analyzeCommand, isSafeCommand } from "../permission/bash.ts";
 import { runShell } from "../util/shell.ts";
 import { clipOutput, formatDuration, oneLine, stripAnsi, truncateEnd } from "../util/text.ts";
 import { checkExternal, resolvePath, type Tool, type ToolContext, ToolError } from "./types.ts";
@@ -15,24 +15,28 @@ interface BashInput {
   run_in_background?: boolean;
 }
 
-/** Permission patterns for a command line: one per simple command. */
-export function commandPatterns(command: string): { patterns: string[]; always: string[] } {
-  const parsed = parseShell(command);
+/**
+ * Permission patterns for a command line: one per command that actually
+ * runs (wrappers such as timeout, env, xargs or sh -c are looked through).
+ */
+export function commandPatterns(command: string): { patterns: string[]; always: string[]; readOnly: boolean[] } {
+  const parsed = analyzeCommand(command);
   if (parsed.complex || !parsed.commands.length) {
     const flat = oneLine(command);
-    return { patterns: [flat], always: [flat] };
+    return { patterns: [flat], always: [flat], readOnly: [false] };
   }
   const patterns = parsed.commands.map((c) => c.text + c.writes.map((w) => ` > ${w}`).join(""));
-  const always = [...new Set(parsed.commands.map((c) => commandPrefix(c.argv)))];
-  return { patterns, always };
+  const always = [...new Set(parsed.commands.map(alwaysPattern))];
+  return { patterns, always, readOnly: parsed.commands.map(isSafeCommand) };
 }
 
 async function permitCommand(ctx: ToolContext, command: string, cwd: string, description?: string): Promise<void> {
-  const { patterns, always } = commandPatterns(command);
+  const { patterns, always, readOnly } = commandPatterns(command);
   await ctx.permit({
     permission: "bash",
     patterns,
     always,
+    readOnly,
     title: description ? `${description}: ${truncateEnd(oneLine(command), 200)}` : `Run: ${truncateEnd(oneLine(command), 200)}`,
     detail: { command, path: cwd },
   });

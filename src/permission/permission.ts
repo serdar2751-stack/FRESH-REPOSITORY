@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { PermissionAction, PermissionConfig } from "../config/config.ts";
 import { newId } from "../util/ids.ts";
-import { isSafeCommand, parseShell, wildcardMatch } from "./bash.ts";
+import { isReadOnlyCommandLine, wildcardMatch } from "./bash.ts";
 
 export type Mode = "normal" | "auto-edit" | "plan" | "yolo";
 
@@ -30,6 +30,11 @@ export interface PermissionRequest {
   title: string;
   detail?: { diff?: string; command?: string; url?: string; path?: string; preview?: string };
   agent?: string;
+  /**
+   * For bash: whether each pattern is a read-only command, decided from the
+   * parsed command (more precise than re-parsing the pattern text).
+   */
+  readOnly?: boolean[];
 }
 
 export type PermissionDecision = "once" | "session" | "always" | "deny";
@@ -55,17 +60,37 @@ export class PermissionDeniedError extends Error {
 export const READ_ONLY = "@readonly";
 
 function readOnlyCommand(cmd: string): boolean {
-  const parsed = parseShell(cmd);
-  return !parsed.complex && parsed.commands.length === 1 && isSafeCommand(parsed.commands[0]!);
+  return isReadOnlyCommandLine(cmd);
 }
+
+/** Secret files: reading them needs approval even inside the project. */
+const SECRET_FILES = [
+  "*.env",
+  "*.env.*",
+  "*.pem",
+  "*.key",
+  "*.p12",
+  "*.pfx",
+  "*.jks",
+  "*.keystore",
+  "*id_rsa",
+  "*id_dsa",
+  "*id_ecdsa",
+  "*id_ed25519",
+  "*.netrc",
+  "*.pgpass",
+  "*.npmrc",
+  "*.pypirc",
+  "*.git-credentials",
+  "*credentials.json",
+];
 
 /** Built-in defaults; user config rules are appended after these (last match wins). */
 export function defaultRules(): Rule[] {
   return [
     { permission: "*", pattern: "*", action: "ask", source: "default" },
     { permission: "read", pattern: "*", action: "allow", source: "default" },
-    { permission: "read", pattern: "*.env", action: "ask", source: "default" },
-    { permission: "read", pattern: "*.env.*", action: "ask", source: "default" },
+    ...SECRET_FILES.map<Rule>((pattern) => ({ permission: "read", pattern, action: "ask", source: "default" })),
     { permission: "read", pattern: "*.env.example", action: "allow", source: "default" },
     { permission: "read", pattern: "*.env.sample", action: "allow", source: "default" },
     { permission: "read", pattern: "*.env.template", action: "allow", source: "default" },
@@ -97,12 +122,12 @@ function permissionMatches(rulePerm: string, perm: string): boolean {
   return rulePerm === perm || (rulePerm.includes("*") && wildcardMatch(rulePerm, perm));
 }
 
-/** Last matching rule wins. */
-export function evaluate(rules: Rule[], permission: string, value: string): { action: PermissionAction; rule?: Rule } {
+/** Last matching rule wins. `readOnly` answers the "@readonly" rule when known. */
+export function evaluate(rules: Rule[], permission: string, value: string, readOnly?: boolean): { action: PermissionAction; rule?: Rule } {
   let found: Rule | undefined;
   for (const r of rules) {
     if (!permissionMatches(r.permission, permission)) continue;
-    const ok = r.test ? r.test(value) : wildcardMatch(r.pattern, value);
+    const ok = r.pattern === READ_ONLY && readOnly !== undefined ? readOnly : r.test ? r.test(value) : wildcardMatch(r.pattern, value);
     if (ok) found = r;
   }
   return { action: found?.action ?? "ask", rule: found };
@@ -164,8 +189,9 @@ export class PermissionManager {
     const rules = this.rulesFor(req.sessionId, opts.agentRules);
     const mode: Mode = opts.mode === "plan" ? "plan" : this.yolo ? "yolo" : (opts.mode ?? "normal");
     let result: PermissionAction = "allow";
-    for (const p of req.patterns.length ? req.patterns : ["*"]) {
-      const { action, rule } = evaluate(rules, req.permission, p);
+    const patterns = req.patterns.length ? req.patterns : ["*"];
+    for (let i = 0; i < patterns.length; i++) {
+      const { action, rule } = evaluate(rules, req.permission, patterns[i]!, req.readOnly?.[i]);
       let a = action;
       // Modes adjust the default answer but never override an explicit user deny.
       if (mode === "plan" && req.permission === "edit") a = "deny";

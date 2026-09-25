@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import OpenAI from "openai";
+import type OpenAI from "openai";
+import { loadedOpenAI, loadOpenAI } from "./sdk.ts";
 import type { AssistantPart, Effort, Message, StopReason, ToolCallPart } from "../core/types.ts";
 import { textOf } from "../core/types.ts";
 import {
@@ -43,20 +44,18 @@ type ChatMessage = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 export class OpenAICompatibleProvider implements Provider {
   readonly id: string;
   readonly format = "openai" as const;
-  private readonly client: OpenAI;
+  private sdkClient?: OpenAI;
   private readonly opts: OpenAIOptions;
   private modelListCache?: Promise<Array<Record<string, unknown>>>;
 
   constructor(opts: OpenAIOptions) {
     this.id = opts.id;
     this.opts = opts;
-    this.client = new OpenAI({
-      apiKey: opts.apiKey ?? "not-needed",
-      ...(opts.baseURL ? { baseURL: opts.baseURL } : {}),
-      defaultHeaders: opts.headers,
-      maxRetries: 0,
-      timeout: opts.timeoutMs ?? 15 * 60 * 1000,
-    });
+  }
+
+  private async client(): Promise<OpenAI> {
+    this.sdkClient ??= await createOpenAIClient(this.opts);
+    return this.sdkClient;
   }
 
   async chat(req: ChatRequest, onEvent: (e: StreamEvent) => void): Promise<ChatResponse> {
@@ -87,7 +86,7 @@ export class OpenAICompatibleProvider implements Provider {
     if (this.opts.extraBody) Object.assign(body, this.opts.extraBody);
 
     try {
-      const stream = (await this.client.chat.completions.create(
+      const stream = (await (await this.client()).chat.completions.create(
         body as unknown as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming,
         { signal: req.signal },
       )) as AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
@@ -179,7 +178,7 @@ export class OpenAICompatibleProvider implements Provider {
   private listRaw(signal?: AbortSignal): Promise<Array<Record<string, unknown>>> {
     this.modelListCache ??= (async () => {
       const out: Array<Record<string, unknown>> = [];
-      for await (const m of this.client.models.list({ signal })) out.push(m as unknown as Record<string, unknown>);
+      for await (const m of (await this.client()).models.list({ signal })) out.push(m as unknown as Record<string, unknown>);
       return out;
     })().catch((err) => {
       this.modelListCache = undefined;
@@ -346,8 +345,26 @@ export function toOpenAIMessages(
   return out;
 }
 
+/** An SDK client for these options (retries are left to the engine). */
+export async function createOpenAIClient(opts: OpenAIOptions): Promise<OpenAI> {
+  const Sdk = await loadOpenAI();
+  return new Sdk({
+    apiKey: opts.apiKey ?? "not-needed",
+    ...(opts.baseURL ? { baseURL: opts.baseURL } : {}),
+    defaultHeaders: opts.headers,
+    maxRetries: 0,
+    timeout: opts.timeoutMs ?? 15 * 60 * 1000,
+  });
+}
+
 export function mapOpenAIError(err: unknown): ProviderError {
   if (err instanceof ProviderError) return err;
+  const OpenAI = loadedOpenAI();
+  if (!OpenAI) {
+    const e = err as Error;
+    if (e?.name === "AbortError") return new ProviderError("aborted", "Request aborted", { cause: err });
+    return new ProviderError("unknown", e?.message ?? String(err), { cause: err });
+  }
   if (err instanceof OpenAI.APIUserAbortError) return new ProviderError("aborted", "Request aborted", { cause: err });
   if (err instanceof OpenAI.APIConnectionError) return new ProviderError("network", `Connection error: ${err.message}`, { cause: err });
   if (err instanceof OpenAI.APIError) {

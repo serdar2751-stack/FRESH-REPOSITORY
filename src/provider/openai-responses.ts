@@ -1,7 +1,7 @@
-import OpenAI from "openai";
+import type OpenAI from "openai";
 import type { AssistantPart, Effort, Message, StopReason, ToolCallPart } from "../core/types.ts";
 import { textOf } from "../core/types.ts";
-import { mapOpenAIError, type OpenAIOptions } from "./openai.ts";
+import { createOpenAIClient, mapOpenAIError, type OpenAIOptions } from "./openai.ts";
 import { type ChatRequest, type ChatResponse, type Provider, ProviderError, type RemoteModel, type StreamEvent } from "./types.ts";
 
 type InputItem = Record<string, unknown>;
@@ -103,19 +103,17 @@ const BAD_REASONING_RE = /encrypted[ _]content|reasoning item|could not be (?:ve
 export class OpenAIResponsesProvider implements Provider {
   readonly id: string;
   readonly format = "openai" as const;
-  private readonly client: OpenAI;
+  private sdkClient?: OpenAI;
   private readonly opts: OpenAIOptions;
 
   constructor(opts: OpenAIOptions) {
     this.id = opts.id;
     this.opts = opts;
-    this.client = new OpenAI({
-      apiKey: opts.apiKey ?? "not-needed",
-      ...(opts.baseURL ? { baseURL: opts.baseURL } : {}),
-      defaultHeaders: opts.headers,
-      maxRetries: 0,
-      timeout: opts.timeoutMs ?? 15 * 60 * 1000,
-    });
+  }
+
+  private async client(): Promise<OpenAI> {
+    this.sdkClient ??= await createOpenAIClient(this.opts);
+    return this.sdkClient;
   }
 
   async chat(req: ChatRequest, onEvent: (e: StreamEvent) => void): Promise<ChatResponse> {
@@ -153,7 +151,7 @@ export class OpenAIResponsesProvider implements Provider {
     let final: Record<string, unknown> | undefined;
     const callIds = new Map<string, string>();
     try {
-      const stream = (await this.client.responses.create(body as never, { signal: req.signal })) as unknown as AsyncIterable<Record<string, unknown> & { type: string }>;
+      const stream = (await (await this.client()).responses.create(body as never, { signal: req.signal })) as unknown as AsyncIterable<Record<string, unknown> & { type: string }>;
       for await (const ev of stream) {
         switch (ev.type) {
           case "response.output_text.delta":
@@ -208,7 +206,7 @@ export class OpenAIResponsesProvider implements Provider {
   async listModels(signal?: AbortSignal): Promise<RemoteModel[]> {
     const out: RemoteModel[] = [];
     try {
-      for await (const m of this.client.models.list({ signal })) out.push({ id: m.id });
+      for await (const m of (await this.client()).models.list({ signal })) out.push({ id: m.id });
     } catch (err) {
       throw mapOpenAIError(err);
     }

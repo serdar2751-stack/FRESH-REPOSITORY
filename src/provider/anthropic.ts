@@ -1,4 +1,5 @@
-import Anthropic from "@anthropic-ai/sdk";
+import type Anthropic from "@anthropic-ai/sdk";
+import { loadAnthropic, loadedAnthropic } from "./sdk.ts";
 import type { AssistantPart, Effort, Message, StopReason } from "../core/types.ts";
 import {
   type ChatRequest,
@@ -49,7 +50,7 @@ const INVALID_JSON_MARKER = "Unable to parse tool parameter JSON";
 export class AnthropicProvider implements Provider {
   readonly id: string;
   readonly format = "anthropic" as const;
-  private readonly client: Anthropic;
+  private sdkClient?: Anthropic;
   private readonly official: boolean;
   private readonly opts: AnthropicOptions;
 
@@ -58,15 +59,23 @@ export class AnthropicProvider implements Provider {
     this.opts = opts;
     const baseURL = opts.baseURL ?? process.env.ANTHROPIC_BASE_URL;
     this.official = !baseURL || /^https:\/\/api\.anthropic\.com\/?/.test(baseURL);
-    this.client = new Anthropic({
-      ...(opts.apiKey ? { apiKey: opts.apiKey } : {}),
-      ...(opts.authToken ? { authToken: opts.authToken } : {}),
-      ...(opts.baseURL ? { baseURL: opts.baseURL } : {}),
-      defaultHeaders: opts.headers,
-      // Retries are owned by the engine so the UI can show them.
-      maxRetries: 0,
-      timeout: opts.timeoutMs ?? 15 * 60 * 1000,
-    });
+  }
+
+  private async client(): Promise<Anthropic> {
+    if (!this.sdkClient) {
+      const Sdk = await loadAnthropic();
+      const opts = this.opts;
+      this.sdkClient = new Sdk({
+        ...(opts.apiKey ? { apiKey: opts.apiKey } : {}),
+        ...(opts.authToken ? { authToken: opts.authToken } : {}),
+        ...(opts.baseURL ? { baseURL: opts.baseURL } : {}),
+        defaultHeaders: opts.headers,
+        // Retries are owned by the engine so the UI can show them.
+        maxRetries: 0,
+        timeout: opts.timeoutMs ?? 15 * 60 * 1000,
+      });
+    }
+    return this.sdkClient;
   }
 
   async chat(req: ChatRequest, onEvent: (e: StreamEvent) => void): Promise<ChatResponse> {
@@ -93,7 +102,8 @@ export class AnthropicProvider implements Provider {
           continue;
         }
         // Eager tool streaming hands malformed JSON to the client; re-issue the turn.
-        if (err instanceof Anthropic.AnthropicError && !(err instanceof Anthropic.APIError) && String(err.message).includes(INVALID_JSON_MARKER) && jsonRetries < 2) {
+        const sdk = loadedAnthropic();
+        if (sdk && err instanceof sdk.AnthropicError && !(err instanceof sdk.APIError) && String(err.message).includes(INVALID_JSON_MARKER) && jsonRetries < 2) {
           jsonRetries++;
           onEvent({ type: "reset", reason: "tool input was not valid JSON; re-issuing the request" });
           continue;
@@ -175,7 +185,7 @@ export class AnthropicProvider implements Provider {
     req: ChatRequest,
     onEvent: (e: StreamEvent) => void,
   ): Promise<ChatResponse> {
-    const stream = this.client.beta.messages.stream(params, { signal: req.signal });
+    const stream = (await this.client()).beta.messages.stream(params, { signal: req.signal });
     const blocks = new Map<number, { type: string; id?: string; name?: string }>();
     for await (const ev of stream) {
       switch (ev.type) {
@@ -221,7 +231,7 @@ export class AnthropicProvider implements Provider {
   async listModels(signal?: AbortSignal): Promise<RemoteModel[]> {
     const out: RemoteModel[] = [];
     try {
-      for await (const m of this.client.models.list({ limit: 100 }, { signal })) {
+      for await (const m of (await this.client()).models.list({ limit: 100 }, { signal })) {
         out.push({
           id: m.id,
           name: m.display_name,
@@ -237,7 +247,7 @@ export class AnthropicProvider implements Provider {
 
   async describeModel(id: string, signal?: AbortSignal): Promise<Partial<ModelInfo> | undefined> {
     try {
-      const m = await this.client.models.retrieve(id, {}, { signal, timeout: 8000 });
+      const m = await (await this.client()).models.retrieve(id, {}, { signal, timeout: 8000 });
       const caps = m.capabilities;
       const info: Partial<ModelInfo> = { name: m.display_name };
       if (m.max_input_tokens) info.contextWindow = m.max_input_tokens;
@@ -434,6 +444,8 @@ function errorMessage(err: InstanceType<typeof Anthropic.APIError>): string {
 
 export function mapAnthropicError(err: unknown): ProviderError {
   if (err instanceof ProviderError) return err;
+  const Anthropic = loadedAnthropic();
+  if (!Anthropic) return mapGenericError(err);
   if (err instanceof Anthropic.APIUserAbortError) return new ProviderError("aborted", "Request aborted", { cause: err });
   if (err instanceof Anthropic.APIConnectionError) {
     return new ProviderError("network", `Connection error: ${err.message}`, { cause: err });
@@ -456,6 +468,10 @@ export function mapAnthropicError(err: unknown): ProviderError {
     return new ProviderError("server", `Anthropic API error${status ? ` ${status}` : ""}: ${msg}`, o);
   }
   if (err instanceof Anthropic.AnthropicError) return new ProviderError("network", err.message, { cause: err });
+  return mapGenericError(err);
+}
+
+function mapGenericError(err: unknown): ProviderError {
   const e = err as Error;
   if (e?.name === "AbortError") return new ProviderError("aborted", "Request aborted", { cause: err });
   return new ProviderError("unknown", e?.message ?? String(err), { cause: err });
